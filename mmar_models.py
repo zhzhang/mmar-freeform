@@ -83,8 +83,8 @@ MODEL_SPECS: dict[str, dict[str, Any]] = {
         "native_thinking": True,
         "enable_thinking": True,
         "sampling": {
-            "temperature": 0.2,
-            "top_p": 1.0,
+            "temperature": 0.3,
+            "top_p": 0.85,
             "max_tokens": 2048,
             "repetition_penalty": 1.2,
         },

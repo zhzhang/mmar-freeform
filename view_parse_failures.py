@@ -2,9 +2,10 @@
 
 Same universe as ``uv run run_judges.py --accuracy-only``: labeled shots in
 the judging pack's ``labels.csv`` joined to ``models/<label>/predictions.jsonl``.
-Sidecars under ``judge_partials/`` are ignored. A stored judge entry counts as
-a parse failure when ``verdict`` is not ``pass`` or ``fail``. Missing entries
-are misses, not listed here.
+``ratings`` is a JSON annotator-to-bool mapping; legacy boolean lists still
+parse. Sidecars under ``judge_partials/`` are ignored. A stored judge entry
+counts as a parse failure when ``verdict`` is not ``pass`` or ``fail``. Missing
+entries are misses, not listed here.
 
 Usage::
 
@@ -53,30 +54,35 @@ CONFIG: dict[str, Any] = {}
 TAIL_CHARS = 220
 
 
-def _parse_ratings_cell(raw: object) -> list[bool]:
-    if isinstance(raw, list):
+def _parse_ratings_cell(raw: object) -> dict[str, bool]:
+    """Annotator-id → bool, or a legacy positional list keyed by index."""
+    if isinstance(raw, (list, dict)):
         values = raw
     else:
         text = str(raw or "").strip()
         if not text:
-            return []
+            return {}
         try:
             values = json.loads(text)
         except json.JSONDecodeError:
-            return []
-    if not isinstance(values, list) or not values:
-        return []
-    out: list[bool] = []
-    for item in values:
+            return {}
+    if isinstance(values, list):
+        items = ((str(index), item) for index, item in enumerate(values))
+    elif isinstance(values, dict):
+        items = ((str(annotator_id), item) for annotator_id, item in values.items())
+    else:
+        return {}
+    out: dict[str, bool] = {}
+    for annotator_id, item in items:
         if isinstance(item, bool):
-            out.append(item)
+            out[annotator_id] = item
         else:
-            return []
+            return {}
     return out
 
 
 def load_pack_label_rows(labels_path: Path) -> list[dict[str, Any]]:
-    """Rows with a non-empty boolean ``ratings`` list (same as run_judges)."""
+    """Rows with boolean ratings and stable annotator identities."""
     rows: list[dict[str, Any]] = []
     if not labels_path.is_file():
         return rows
@@ -85,8 +91,8 @@ def load_pack_label_rows(labels_path: Path) -> list[dict[str, Any]]:
         for raw in reader:
             qid = str(raw.get("question_id") or "").strip()
             model = str(raw.get("model_label") or "").strip()
-            ratings = _parse_ratings_cell(raw.get("ratings"))
-            if not qid or not model or not ratings:
+            ratings_by_annotator = _parse_ratings_cell(raw.get("ratings"))
+            if not qid or not model or not ratings_by_annotator:
                 continue
             try:
                 shot_index = int(raw.get("shot_index", 0))
@@ -97,7 +103,8 @@ def load_pack_label_rows(labels_path: Path) -> list[dict[str, Any]]:
                     "question_id": qid,
                     "model_label": model,
                     "shot_index": shot_index,
-                    "ratings": ratings,
+                    "ratings": list(ratings_by_annotator.values()),
+                    "ratings_by_annotator": ratings_by_annotator,
                     "generation_id": str(raw.get("generation_id") or "").strip(),
                 }
             )
@@ -224,7 +231,16 @@ def load_bundle(pack_dir_s: str) -> dict[str, Any]:
                 if key and isinstance(entry, dict) and not is_dropped_model(str(key))
             }
             judge_keys.update(judges)
-        samples.append((qid, model, row["shot_index"], list(row["ratings"]), judges))
+        samples.append(
+            (
+                qid,
+                model,
+                row["shot_index"],
+                list(row["ratings"]),
+                dict(row.get("ratings_by_annotator") or {}),
+                judges,
+            )
+        )
 
         if qid not in by_id:
             sample_record = record
@@ -257,7 +273,7 @@ def load_bundle(pack_dir_s: str) -> dict[str, Any]:
         sample_entry = next(
             (
                 (judges or {}).get(key)
-                for _qid, _model, _shot, _ratings, judges in samples
+                for _qid, _model, _shot, _ratings, _by_annotator, judges in samples
                 if judges and key in judges
             ),
             None,
@@ -300,7 +316,7 @@ def load_bundle(pack_dir_s: str) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
     shots: dict[str, dict[str, Any]] = {}
 
-    for qid, model, shot_index, ratings, judges in samples:
+    for qid, model, shot_index, ratings, ratings_by_annotator, judges in samples:
         record = pred_cache.get(model, {}).get(qid)
         shot = _shot_for_index(record, shot_index) if record else None
         prediction = ""
@@ -314,6 +330,7 @@ def load_bundle(pack_dir_s: str) -> dict[str, Any]:
             "shot_index": shot_index,
             "answer_prediction": prediction,
             "ratings": ratings,
+            "ratings_by_annotator": ratings_by_annotator,
             "gold": gold,
         }
         for key, mode in key_mode.items():
@@ -893,9 +910,14 @@ async function selectFailure(i) {
     const gold = q.answer
       ? `<div class="answer-box"><strong>Gold answer</strong><pre>${escapeHtml(q.answer)}</pre></div>`
       : "";
-    const ratings = (shot.ratings || []).map((v, i) =>
-      `<span class="${v ? "pass" : "fail"}">r${i}:${v ? "pass" : "fail"}</span>`
-    ).join(" ");
+    const byAnnotator = shot.ratings_by_annotator || {};
+    const ratingEntries = Object.keys(byAnnotator).length
+      ? Object.entries(byAnnotator)
+      : (shot.ratings || []).map((v, i) => ["r" + i, v]);
+    const ratings = ratingEntries.map(([id, v]) => {
+      const short = String(id).includes("@") ? String(id).split("@")[0] : String(id);
+      return `<span class="${v ? "pass" : "fail"}">${escapeHtml(short)}:${v ? "pass" : "fail"}</span>`;
+    }).join(" ");
     const stored = `<dl class="kv">
       <dt>verdict</dt><dd>${escapeHtml(fail.verdict == null ? "null" : String(fail.verdict))}</dd>
       <dt>output</dt><dd>${escapeHtml(fail.output == null ? "null" : String(fail.output))}</dd>

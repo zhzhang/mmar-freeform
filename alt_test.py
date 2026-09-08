@@ -118,6 +118,46 @@ def _instance_cluster_key(instance_id: InstanceId) -> str:
     return text
 
 
+def _cluster_table(
+    per_annotator_items: Mapping[str, Sequence[tuple[str, float]]],
+) -> tuple[dict[str, dict[str, list[float]]], list[str]]:
+    """Annotator → cluster → W^f values, plus the sorted cluster id list."""
+    cluster_vals: dict[str, dict[str, list[float]]] = {}
+    for annotator, items in per_annotator_items.items():
+        by_cluster: dict[str, list[float]] = {}
+        for cluster, value in items:
+            by_cluster.setdefault(str(cluster), []).append(float(value))
+        if by_cluster:
+            cluster_vals[str(annotator)] = by_cluster
+    clusters = sorted({c for by_c in cluster_vals.values() for c in by_c})
+    return cluster_vals, clusters
+
+
+def _rho_on_draw(
+    cluster_vals: Mapping[str, Mapping[str, Sequence[float]]],
+    clusters: Sequence[str],
+    chosen: Sequence[int],
+) -> float:
+    rhos: list[float] = []
+    for by_cluster in cluster_vals.values():
+        vals: list[float] = []
+        for index in chosen:
+            vals.extend(by_cluster.get(clusters[int(index)], ()))
+        if vals:
+            rhos.append(float(np.mean(vals)))
+    return float(np.mean(rhos)) if rhos else float("nan")
+
+
+def _rho_from_items(
+    per_annotator_items: Mapping[str, Sequence[tuple[str, float]]],
+) -> float | None:
+    rhos: list[float] = []
+    for rows in per_annotator_items.values():
+        if rows:
+            rhos.append(float(np.mean([float(value) for _cluster, value in rows])))
+    return float(np.mean(rhos)) if rhos else None
+
+
 def _bootstrap_rho_ci(
     per_annotator_items: Mapping[str, Sequence[tuple[str, float]]],
     *,
@@ -129,14 +169,7 @@ def _bootstrap_rho_ci(
 
     ``per_annotator_items`` maps annotator id → ``(cluster_key, W^f)`` rows.
     """
-    cluster_vals: dict[str, dict[str, list[float]]] = {}
-    for annotator, items in per_annotator_items.items():
-        by_cluster: dict[str, list[float]] = {}
-        for cluster, value in items:
-            by_cluster.setdefault(cluster, []).append(float(value))
-        if by_cluster:
-            cluster_vals[str(annotator)] = by_cluster
-    clusters = sorted({c for by_c in cluster_vals.values() for c in by_c})
+    cluster_vals, clusters = _cluster_table(per_annotator_items)
     if len(clusters) < 2 or n_bootstrap < 1:
         return None, None
 
@@ -146,19 +179,44 @@ def _bootstrap_rho_ci(
     draws = np.empty(int(n_bootstrap), dtype=float)
     for b in range(int(n_bootstrap)):
         chosen = rng.integers(0, n_clusters, size=n_clusters)
-        rhos: list[float] = []
-        for by_cluster in cluster_vals.values():
-            vals: list[float] = []
-            for index in chosen:
-                vals.extend(by_cluster.get(clusters[int(index)], ()))
-            if vals:
-                rhos.append(float(np.mean(vals)))
-        draws[b] = float(np.mean(rhos)) if rhos else np.nan
+        draws[b] = _rho_on_draw(cluster_vals, clusters, chosen)
     finite = draws[np.isfinite(draws)]
     if finite.size == 0:
         return None, None
     low, high = np.quantile(finite, [alpha, 1.0 - alpha])
     return float(low), float(high)
+
+
+def _bootstrap_rho_delta(
+    items_a: Mapping[str, Sequence[tuple[str, float]]],
+    items_b: Mapping[str, Sequence[tuple[str, float]]],
+    *,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    ci_level: float = DEFAULT_CI_LEVEL,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> tuple[np.ndarray, float | None]:
+    """Paired cluster draws of Δ = ρ_a − ρ_b. Returns (finite draws, one-sided upper)."""
+    table_a, clusters_a = _cluster_table(items_a)
+    table_b, clusters_b = _cluster_table(items_b)
+    shared_annotators = sorted(set(table_a) & set(table_b))
+    table_a = {key: table_a[key] for key in shared_annotators}
+    table_b = {key: table_b[key] for key in shared_annotators}
+    clusters = sorted(set(clusters_a) | set(clusters_b))
+    if len(clusters) < 2 or n_bootstrap < 1 or not shared_annotators:
+        return np.array([], dtype=float), None
+
+    rng = np.random.default_rng(seed)
+    n_clusters = len(clusters)
+    draws = np.empty(int(n_bootstrap), dtype=float)
+    for b in range(int(n_bootstrap)):
+        chosen = rng.integers(0, n_clusters, size=n_clusters)
+        draws[b] = _rho_on_draw(table_a, clusters, chosen) - _rho_on_draw(
+            table_b, clusters, chosen
+        )
+    finite = draws[np.isfinite(draws)]
+    if finite.size == 0:
+        return finite, None
+    return finite, float(np.quantile(finite, float(ci_level)))
 
 
 def _resolve_scoring_function(scoring_function: str | ScoringFn) -> ScoringFn:
@@ -342,6 +400,64 @@ def alt_test(
     }
 
 
+def _maps_from_instances(
+    instances: Sequence[tuple[InstanceId, HumanRatings, Any]],
+    *,
+    min_humans_per_instance: int = MIN_HUMANS_PER_INSTANCE,
+) -> tuple[dict[InstanceId, Any], dict[AnnotatorId, dict[InstanceId, bool]], int, int]:
+    """LLM labels and per-annotator maps. Drops ``None`` preds and thin rating sets."""
+    humans: dict[AnnotatorId, dict[InstanceId, bool]] = {}
+    llm: dict[InstanceId, Any] = {}
+    n_missing = 0
+    n_skipped_lt3 = 0
+    for instance_id, ratings, pred in instances:
+        if isinstance(ratings, Mapping):
+            annotated_values = [
+                (annotator_id, bool(rating)) for annotator_id, rating in ratings.items()
+            ]
+        else:
+            annotated_values = [
+                (str(index), bool(rating)) for index, rating in enumerate(ratings)
+            ]
+        if len(annotated_values) < min_humans_per_instance:
+            n_skipped_lt3 += 1
+            continue
+        if pred is None:
+            n_missing += 1
+            continue
+        llm[instance_id] = pred
+        for annotator_id, rating in annotated_values:
+            humans.setdefault(annotator_id, {})[instance_id] = rating
+    return llm, humans, n_missing, n_skipped_lt3
+
+
+def _advantage_items(
+    llm: Mapping[InstanceId, Annotation],
+    humans: Mapping[AnnotatorId, Mapping[InstanceId, Annotation]],
+    *,
+    min_humans_per_instance: int = MIN_HUMANS_PER_INSTANCE,
+    min_instances_per_human: int = MIN_INSTANCES_PER_HUMAN,
+) -> dict[str, list[tuple[str, float]]]:
+    """Per excluded annotator, ``(cluster_key, W^f)`` rows."""
+    alignments, _skipped, _n_kept = leave_one_out_alignments(
+        llm,
+        humans,
+        scoring_function="accuracy",
+        min_humans_per_instance=min_humans_per_instance,
+        min_instances_per_human=min_instances_per_human,
+    )
+    items: dict[str, list[tuple[str, float]]] = {}
+    for excluded_h, pairs in alignments.items():
+        items[str(excluded_h)] = [
+            (
+                _instance_cluster_key(instance_id),
+                1.0 if llm_score >= human_score else 0.0,
+            )
+            for instance_id, llm_score, human_score in pairs
+        ]
+    return items
+
+
 def score_binary_judge(
     instances: Sequence[tuple[InstanceId, HumanRatings, Any]],
     *,
@@ -364,29 +480,9 @@ def score_binary_judge(
     non-``None`` label enter.
     """
     n_total = len(instances)
-    n_missing = 0
-    n_skipped_lt3 = 0
-    humans: dict[AnnotatorId, dict[InstanceId, bool]] = {}
-    llm: dict[InstanceId, Any] = {}
-
-    for instance_id, ratings, pred in instances:
-        if isinstance(ratings, Mapping):
-            annotated_values = [
-                (annotator_id, bool(rating)) for annotator_id, rating in ratings.items()
-            ]
-        else:
-            annotated_values = [
-                (str(index), bool(rating)) for index, rating in enumerate(ratings)
-            ]
-        if len(annotated_values) < min_humans_per_instance:
-            n_skipped_lt3 += 1
-            continue
-        if pred is None:
-            n_missing += 1
-            continue
-        llm[instance_id] = pred
-        for annotator_id, rating in annotated_values:
-            humans.setdefault(annotator_id, {})[instance_id] = rating
+    llm, humans, n_missing, n_skipped_lt3 = _maps_from_instances(
+        instances, min_humans_per_instance=min_humans_per_instance
+    )
 
     if not llm or not humans:
         return {
@@ -422,3 +518,116 @@ def score_binary_judge(
     result["n_skipped_lt3"] = n_skipped_lt3
     result["n_label_rows"] = n_total
     return result
+
+
+def compare_binary_judges(
+    instances_a: Sequence[tuple[InstanceId, HumanRatings, Any]],
+    instances_b: Sequence[tuple[InstanceId, HumanRatings, Any]],
+    *,
+    min_humans_per_instance: int = MIN_HUMANS_PER_INSTANCE,
+    min_instances_per_human: int = MIN_INSTANCES_PER_HUMAN,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    ci_level: float = DEFAULT_CI_LEVEL,
+    bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    """Paired cluster bootstrap of Δ = ρ_a − ρ_b.
+
+    Instance ids must have a non-``None`` label on both sides; ratings come
+    from ``instances_a`` on that intersection. The one-sided test is
+    H1: ρ_a < ρ_b (A is worse). ``p_a_worse`` is plus-one corrected
+    P*(Δ* ≥ 0). ``a_significantly_worse`` is true when the one-sided
+    ``ci_level`` upper bound on Δ is below 0.
+    """
+    llm_a, humans_a, n_missing_a, n_skipped_a = _maps_from_instances(
+        instances_a, min_humans_per_instance=min_humans_per_instance
+    )
+    llm_b, _humans_b, n_missing_b, n_skipped_b = _maps_from_instances(
+        instances_b, min_humans_per_instance=min_humans_per_instance
+    )
+    ids_a, ids_b = set(llm_a), set(llm_b)
+    common = ids_a & ids_b
+    n_only_a = len(ids_a - common)
+    n_only_b = len(ids_b - common)
+    llm_a = {key: llm_a[key] for key in common}
+    llm_b = {key: llm_b[key] for key in common}
+    humans = {
+        annotator: {iid: label for iid, label in ratings.items() if iid in common}
+        for annotator, ratings in humans_a.items()
+    }
+    humans = {annotator: ratings for annotator, ratings in humans.items() if ratings}
+
+    empty = {
+        "rho_a": None,
+        "rho_b": None,
+        "delta": None,
+        "delta_hi": None,
+        "p_a_worse": None,
+        "a_significantly_worse": False,
+        "n": 0,
+        "n_only_a": n_only_a,
+        "n_only_b": n_only_b,
+        "n_missing_a": n_missing_a,
+        "n_missing_b": n_missing_b,
+        "n_skipped_lt3_a": n_skipped_a,
+        "n_skipped_lt3_b": n_skipped_b,
+        "n_annotators": 0,
+        "ci_level": float(ci_level),
+        "n_bootstrap": 0,
+    }
+    if not common or not humans:
+        return empty
+
+    items_a = _advantage_items(
+        llm_a,
+        humans,
+        min_humans_per_instance=min_humans_per_instance,
+        min_instances_per_human=min_instances_per_human,
+    )
+    items_b = _advantage_items(
+        llm_b,
+        humans,
+        min_humans_per_instance=min_humans_per_instance,
+        min_instances_per_human=min_instances_per_human,
+    )
+    shared = sorted(set(items_a) & set(items_b))
+    items_a = {key: items_a[key] for key in shared}
+    items_b = {key: items_b[key] for key in shared}
+    rho_a = _rho_from_items(items_a)
+    rho_b = _rho_from_items(items_b)
+    if rho_a is None or rho_b is None:
+        empty["n"] = len(common)
+        empty["n_annotators"] = len(shared)
+        return empty
+
+    draws, delta_hi = _bootstrap_rho_delta(
+        items_a,
+        items_b,
+        n_bootstrap=n_bootstrap,
+        ci_level=ci_level,
+        seed=bootstrap_seed,
+    )
+    n_finite = int(draws.size)
+    if n_finite:
+        p_a_worse = (1.0 + float(np.sum(draws >= 0.0))) / (n_finite + 1.0)
+    else:
+        p_a_worse = None
+    delta = float(rho_a - rho_b)
+    worse = bool(delta_hi is not None and delta_hi < 0.0)
+    return {
+        "rho_a": float(rho_a),
+        "rho_b": float(rho_b),
+        "delta": delta,
+        "delta_hi": delta_hi,
+        "p_a_worse": p_a_worse,
+        "a_significantly_worse": worse,
+        "n": len(common),
+        "n_only_a": n_only_a,
+        "n_only_b": n_only_b,
+        "n_missing_a": n_missing_a,
+        "n_missing_b": n_missing_b,
+        "n_skipped_lt3_a": n_skipped_a,
+        "n_skipped_lt3_b": n_skipped_b,
+        "n_annotators": len(shared),
+        "ci_level": float(ci_level),
+        "n_bootstrap": n_finite,
+    }
