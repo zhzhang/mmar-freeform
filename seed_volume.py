@@ -6,12 +6,8 @@ Layout on the ``latent-reasoning`` Volume:
       audio/*.wav
       MMAR-meta.jsonl
       data/mmar-audio.tar.gz
-    /models/nvidia/audio-flamingo-3-hf/
     /models/nvidia/audio-flamingo-next-think-hf/
-    /models/nvidia/music-flamingo-hf/
-    /models/nvidia/audio-flamingo-2/
     /models/Qwen/Qwen3-Omni-30B-A3B-Thinking/
-    /models/Qwen/Qwen3.6-35B-A3B-FP8/
     /models/mistralai/Voxtral-Small-24B-2507/
     ...
 
@@ -23,11 +19,10 @@ Consumers can mount the whole Volume, or use subpaths::
 Usage:
 
     uv run modal run seed_volume.py
-    uv run modal run seed_volume.py --datasets mmar --models af3
+    uv run modal run seed_volume.py --datasets mmar --models af-next-think
     uv run modal run seed_volume.py --datasets mmar --models eval
     uv run modal run seed_volume.py --datasets mmar --models none
-    uv run modal run seed_volume.py --datasets none --models af3,af2 --force
-    uv run modal run seed_volume.py --repo-id nvidia/audio-flamingo-3-hf --datasets none
+    uv run modal run seed_volume.py --repo-id nvidia/audio-flamingo-next-think-hf --datasets none
     uv run modal run seed_volume.py --list-only
     uv run modal run --detach seed_volume.py --datasets none --models af-next-think
 
@@ -61,18 +56,10 @@ MIN_DISK_SIZE = 524288
 
 # Short aliases used by this repo's MMAR eval scripts.
 MODEL_ALIASES: dict[str, str] = {
-    "af3": "nvidia/audio-flamingo-3-hf",
-    "audio-flamingo-3": "nvidia/audio-flamingo-3-hf",
-    "audio-flamingo-3-hf": "nvidia/audio-flamingo-3-hf",
     "af-next-think": "nvidia/audio-flamingo-next-think-hf",
     "afnext-think": "nvidia/audio-flamingo-next-think-hf",
     "audio-flamingo-next-think": "nvidia/audio-flamingo-next-think-hf",
     "audio-flamingo-next-think-hf": "nvidia/audio-flamingo-next-think-hf",
-    "music-flamingo": "nvidia/music-flamingo-hf",
-    "music-flamingo-hf": "nvidia/music-flamingo-hf",
-    "mf": "nvidia/music-flamingo-hf",
-    "af2": "nvidia/audio-flamingo-2",
-    "audio-flamingo-2": "nvidia/audio-flamingo-2",
     "qwen3-omni": "Qwen/Qwen3-Omni-30B-A3B-Thinking",
     "qwen3-omni-thinking": "Qwen/Qwen3-Omni-30B-A3B-Thinking",
     "qwen3-omni-instruct": "marksverdhei/Qwen3-Omni-30B-A3B-FP8",
@@ -84,13 +71,6 @@ MODEL_ALIASES: dict[str, str] = {
     "gemma-4-12b-it": "google/gemma-4-12B-it",
     "nemotron-3-nano-omni": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8",
     "nemotron-3-nano-omni-fp8": "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-FP8",
-    "qwen2.5-3b": "Qwen/Qwen2.5-3B-Instruct",
-    "qwen2.5-3b-instruct": "Qwen/Qwen2.5-3B-Instruct",
-    "qwen-3b": "Qwen/Qwen2.5-3B-Instruct",
-    "qwen3.6-35b-a3b-fp8": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "qwen3.6-35b-a3b": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "qwen3.6-35b": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "qwen3.6": "Qwen/Qwen3.6-35B-A3B-FP8",
     "mimo-audio-7b": "XiaomiMiMo/MiMo-Audio-7B-Instruct",
     "mimo-audio-7b-instruct": "XiaomiMiMo/MiMo-Audio-7B-Instruct",
     "mimo-audio-tokenizer": "XiaomiMiMo/MiMo-Audio-Tokenizer",
@@ -102,27 +82,23 @@ MODEL_ALIASES: dict[str, str] = {
 }
 
 DEFAULT_DATASETS = ("mmar",)
-DEFAULT_MODELS = ("af3",)
+DEFAULT_MODELS = ("af-next-think",)
 ALL_MODELS = (
-    "af3",
     "af-next-think",
-    "music-flamingo",
-    "af2",
     "qwen3-omni",
     "qwen3-omni-instruct",
     "phi-4-multimodal",
     "gemma-4-e4b",
     "gemma-4-12b",
     "nemotron-3-nano-omni",
-    "qwen2.5-3b",
-    "qwen3.6-35b-a3b-fp8",
     "voxtral-small-24b",
+    "mimo-audio-7b",
+    "interactive-omni-8b",
 )
 
-# Checkpoints used by ``run_experiment.py --models all`` (no judges / unused AF2/AF3).
+# Checkpoints used by ``run_experiment.py --models all``.
 EVAL_MODELS = (
     "af-next-think",
-    "music-flamingo",
     "qwen3-omni",
     "voxtral-small-24b",
     "phi-4-multimodal",
@@ -516,7 +492,7 @@ def main(
 
     Args:
         datasets: ``mmar`` or ``all``. Pass ``none`` to skip datasets.
-        models: Comma-separated aliases (af3, af-next-think, af2, qwen3-omni, ...)
+        models: Comma-separated aliases (af-next-think, qwen3-omni, ...)
             or Hub repo ids.
             Pass ``eval`` / ``mmar-eval`` for the ``run_experiment.py`` suite.
             Pass ``none`` to skip models. Ignored when ``repo_id`` is set.

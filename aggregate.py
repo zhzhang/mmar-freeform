@@ -9,7 +9,6 @@ from typing import Any
 # Default experiment model set (used by run_experiment aggregation).
 MODEL_LABELS = (
     "af-next-think",
-    "music-flamingo",
     "qwen3-omni",
     "voxtral-small-24b",
     "phi-4-multimodal",
@@ -17,9 +16,9 @@ MODEL_LABELS = (
     "gemma-4-12b",
     "nemotron-3-nano-omni",
 )
-# Dropped from the paper set. exports/ keeps the labeled rows; viewers,
-# Alt-Test, and pack scripts skip these labels (and ``{label}__…`` judge keys).
-DROPPED_MODEL_LABELS = frozenset({"qwen2.5-omni-7b"})
+# No gradees are filtered out of the paper set. Callers still skip a label
+# when it is passed in explicitly.
+DROPPED_MODEL_LABELS = frozenset()
 
 
 def is_dropped_model(

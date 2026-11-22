@@ -24,7 +24,6 @@ from typing import Any
 from audio_flamingo_runtime import resolve_model_dir
 from mmar_common import (
     ASSISTANT_THINK_OPEN,
-    MUSIC_FLAMINGO_THINK_SUFFIX,
     after_last_think_close,
     ensure_assistant_think_open,
     ensure_judge_schema,
@@ -38,10 +37,10 @@ from mmar_common import (
     write_jsonl,
 )
 
-DEFAULT_JUDGE_MODEL_IDS = ("Qwen/Qwen3.6-35B-A3B-FP8",)
-# Back-compat aliases.
+DEFAULT_JUDGE_MODEL_IDS = ("Qwen/Qwen3-Omni-30B-A3B-Thinking",)
+# Back-compat aliases. The slug is the paper label, not the Hub path tail.
 DEFAULT_GRADER_MODEL_ID = DEFAULT_JUDGE_MODEL_IDS[0]
-GRADER_LABEL = judge_label(DEFAULT_GRADER_MODEL_ID)
+GRADER_LABEL = "qwen3-omni"
 
 # Default judge sampling fallback (unknown judges).
 DEFAULT_JUDGE_SAMPLING: dict[str, Any] = {
@@ -56,76 +55,10 @@ DEFAULT_JUDGE_BATCH_SIZE = 64
 GRADE_TOP_P_CAP = 0.95
 GRADE_REPETITION_PENALTY_FLOOR = 1.05
 
-# Short names accepted by judge CLIs (mirrors seed_volume.MODEL_ALIASES).
-JUDGE_MODEL_ALIASES: dict[str, str] = {
-    "qwen2.5-3b": "Qwen/Qwen2.5-3B-Instruct",
-    "qwen2.5-3b-instruct": "Qwen/Qwen2.5-3B-Instruct",
-    "qwen-3b": "Qwen/Qwen2.5-3B-Instruct",
-    "qwen3.6-35b-a3b-fp8": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "qwen3.6-35b-a3b": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "qwen3.6-35b": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "qwen3.6": "Qwen/Qwen3.6-35B-A3B-FP8",
-    "qwen3.5-122b-a10b-fp8": "Qwen/Qwen3.5-122B-A10B-FP8",
-    "qwen3.5-122b-a10b": "Qwen/Qwen3.5-122B-A10B-FP8",
-    "qwen3.5-122b": "Qwen/Qwen3.5-122B-A10B-FP8",
-}
-
-# Per-judge vLLM engine + SamplingParams (mirrors MODEL_SPECS for test takers).
-JUDGE_SPECS: dict[str, dict[str, Any]] = {
-    "qwen2.5-3b-instruct": {
-        "model_id": "Qwen/Qwen2.5-3B-Instruct",
-        "engine": {
-            "dtype": "bfloat16",
-            # Grade prompt + up to max_tokens generation.
-            "max_model_len": 8192,
-            "max_num_batched_tokens": 8192,
-            "enforce_eager": True,
-            "enable_prefix_caching": True,
-            "trust_remote_code": True,
-        },
-        # generation_config.json: T=0.7, top_p=0.8, top_k=20, repetition_penalty=1.05
-        "sampling": {
-            "temperature": 0.0,
-            "top_p": 0.8,
-            "top_k": 20,
-            "repetition_penalty": 1.05,
-            "max_tokens": 4096,
-        },
-        "batch_size": 128,
-    },
-    "qwen3.6-35b-a3b-fp8": {
-        "model_id": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "engine": {
-            "dtype": "auto",
-            "max_model_len": 8192,
-            "max_num_batched_tokens": 8192,
-            # Only 3B params are active per token, so decode is kernel-launch
-            # bound and CUDA graphs dominate: eager measured 332 output tok/s
-            # vs 4.8-7k with graphs on one H100.
-            "enforce_eager": False,
-            "enable_prefix_caching": True,
-            "trust_remote_code": True,
-            "gpu_memory_utilization": 0.92,
-            # Text-only path: skip vision tower for grading.
-            "language_model_only": True,
-        },
-        # Chat template skips CoT only when enable_thinking is false.
-        "enable_thinking": True,
-        # Thinking-mode defaults: T=1.0, top_p=0.95, top_k=20
-        # (judging keeps card T, caps top_p, floors repetition_penalty).
-        # Grade replies average ~600 tokens; 4096 leaves headroom for the rare
-        # runaway (~0.2% of shots) whose truncation would score as a Fail.
-        "sampling": {
-            "temperature": 0.0,
-            "top_p": 0.95,
-            "top_k": 20,
-            "max_tokens": 4096,
-        },
-        # Throughput keeps scaling with concurrency (128→3.5k, 256→4.8k,
-        # 512→7.0k output tok/s); KV holds ~1M tokens so 512 seqs fit easily.
-        "batch_size": 512,
-    },
-}
+# Paper judges are the audio MODEL_SPECS labels plus Gemini. This table is
+# empty: there is no separate text-only judge.
+JUDGE_MODEL_ALIASES: dict[str, str] = {}
+JUDGE_SPECS: dict[str, dict[str, Any]] = {}
 
 # Named formats live in ``JUDGE_FORMATS`` below. Default runs still use
 # with_gt / free via include_gold; ``--grade-prompt`` selects any table
@@ -160,7 +93,7 @@ ACCURACY_META_KEYS = frozenset(
 
 
 def resolve_judge_model_id(model_id: str) -> str:
-    """Expand a judge alias (e.g. ``qwen3.6-35b-a3b-fp8``) to a Hub repo id."""
+    """Expand a judge alias to a Hub repo id."""
     key = str(model_id or "").strip()
     if not key:
         return key
@@ -169,7 +102,7 @@ def resolve_judge_model_id(model_id: str) -> str:
 
 def _default_judge_engine(model_id: str) -> dict[str, Any]:
     """Fallback engine kwargs for judges not listed in JUDGE_SPECS."""
-    engine: dict[str, Any] = {
+    return {
         "dtype": "auto" if _looks_fp8(model_id) else "bfloat16",
         "max_model_len": 8192,
         "max_num_batched_tokens": 8192,
@@ -177,9 +110,6 @@ def _default_judge_engine(model_id: str) -> dict[str, Any]:
         "enable_prefix_caching": True,
         "trust_remote_code": True,
     }
-    if _needs_language_model_only(model_id):
-        engine["language_model_only"] = True
-    return engine
 
 
 def resolve_judge_spec(model_id: str) -> dict[str, Any]:
@@ -287,12 +217,6 @@ def judge_sampling_params(
 def _looks_fp8(model_id: str) -> bool:
     text = model_id.lower()
     return "fp8" in text or text.endswith("-fp8")
-
-
-def _needs_language_model_only(model_id: str) -> bool:
-    """Qwen3.5/3.6 multimodal checkpoints: skip the vision tower for text judging."""
-    text = model_id.lower()
-    return any(token in text for token in ("qwen3.5", "qwen3.6", "qwen3_5", "qwen3_6"))
 
 
 def grade_prompt_names() -> tuple[str, ...]:
@@ -1566,59 +1490,11 @@ def load_grader(
             ),
         }
 
-    from modal_cache import configure_compile_cache
+    from mmar_models import MODEL_SPECS
 
-    model_id = resolve_judge_model_id(model_id)
-    label = judge_label(model_id)
-    configure_compile_cache(label)
-
-    from vllm import LLM, SamplingParams
-
-    local_id = resolve_model_dir(model_id, None)
-    engine = resolve_judge_engine(model_id, args)
-    sampling = resolve_judge_sampling(model_id, args)
-    sampling = _grade_sampling_for_engine(engine, sampling)
-
-    llm_kwargs: dict[str, Any] = {"model": local_id, **engine}
-    language_model_only = bool(engine.get("language_model_only"))
-    try:
-        llm = LLM(**llm_kwargs)
-    except TypeError as exc:
-        # Older vLLM builds may not accept language_model_only.
-        if not language_model_only:
-            raise
-        print(f"[grader] language_model_only unsupported ({exc}); retrying without it")
-        llm_kwargs.pop("language_model_only", None)
-        llm = LLM(**llm_kwargs)
-    tokenizer = llm.get_tokenizer()
-    _ensure_tokenizer_chat_template(tokenizer, model_dir=local_id)
-    spec = resolve_judge_spec(model_id)
-    chat_template_kwargs: dict[str, Any] = {}
-    if "enable_thinking" in spec:
-        chat_template_kwargs["enable_thinking"] = bool(spec["enable_thinking"])
-    dtype = engine.get("dtype", "?")
-    print(
-        f"Freeform grader ready: {model_id} ({local_id}) "
-        f"label={label} dtype={dtype} sampling={sampling}"
-        f"{' language_model_only' if language_model_only else ''}"
+    raise SystemExit(
+        f"{model_id!r} is not one of the paper judges {list(MODEL_SPECS)}."
     )
-    return {
-        "llm": llm,
-        "tokenizer": tokenizer,
-        "model_id": model_id,
-        "judge_label": label,
-        "suite_label": None,
-        "backend": None,
-        "SamplingParams": SamplingParams,
-        "sampling": sampling,
-        "lora_request": None,
-        "chat_kwargs": (
-            {"chat_template_kwargs": chat_template_kwargs}
-            if chat_template_kwargs
-            else {}
-        ),
-        "chat_template_kwargs": chat_template_kwargs,
-    }
 
 
 # Qwen3-Omni stores this in chat_template.json, not tokenizer_config.json.
@@ -1802,12 +1678,6 @@ NONGOLD_AUDIO_PROMPT_TEMPLATES: dict[str, str] = {
         "<sound>{fields}<|im_end|>\n"
         "<|im_start|>assistant\n" + ASSISTANT_THINK_OPEN
     ),
-    "music-flamingo": (
-        "<|im_start|>system\n{system}\n{instructions}<|im_end|>\n"
-        "<|im_start|>user\n"
-        "<sound>{fields}<|im_end|>\n"
-        "<|im_start|>assistant\n" + ASSISTANT_THINK_OPEN
-    ),
 }
 
 # Chat-message backends (not a string template). Slots match the format fields.
@@ -1821,15 +1691,8 @@ NONGOLD_AUDIO_CHAT_LAYOUT = (
 )
 
 
-_ANSWER_FORMAT_TAIL_RE = re.compile(
-    r",?\s*then give a concise, answer in a single final line in exactly this format:\n"
-    r"Answer:.*$",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
 def _adapt_judge_instructions(label: str, instructions: str) -> str:
-    """Match generation output format: ``Answer:`` line, except Music Flamingo."""
+    """Match generation output format: an ``Answer:`` line, with timestamps for AF-Next."""
     text = instructions
     if label == "af-next-think" and "with timestamps" not in text:
         if "Reason step by step before answering" in text:
@@ -1842,9 +1705,6 @@ def _adapt_judge_instructions(label: str, instructions: str) -> str:
             text = text.replace("Reason briefly,", "Reason briefly with timestamps,", 1)
         else:
             text = text.replace("Reason briefly ", "Reason briefly with timestamps ", 1)
-    if label == "music-flamingo":
-        stripped = _ANSWER_FORMAT_TAIL_RE.sub(".", text).rstrip()
-        text = f"{stripped}\n\n{MUSIC_FLAMINGO_THINK_SUFFIX}"
     return text
 
 
@@ -1854,10 +1714,6 @@ def _nongold_audio_system_text(label: str) -> str:
         from mmar_models import AF_NEXT_SYSTEM
 
         return AF_NEXT_SYSTEM
-    if label == "music-flamingo":
-        from mmar_models import MUSIC_FLAMINGO_SYSTEM
-
-        return MUSIC_FLAMINGO_SYSTEM
     return ""
 
 
@@ -2046,11 +1902,9 @@ def _judge_backend(label: str) -> str:
 
 def judge_can_hear_audio(label: str) -> bool:
     """True when this label can take an ``audio_included`` format."""
-    from mmar_api import is_api_judge, is_batch_api_judge
+    from mmar_api import is_api_judge
     from mmar_models import MODEL_SPECS
 
-    if is_batch_api_judge(label):
-        return False
     if is_api_judge(label):
         return True
     if label in NONGOLD_AUDIO_PROMPT_TEMPLATES:
@@ -2073,7 +1927,7 @@ def render_judge_prompt(
     is applied later by vLLM / HF. API judges send ``build_grade_prompt``
     text and attach audio out of band when the format includes it.
     """
-    from mmar_api import is_api_judge, is_batch_api_judge
+    from mmar_api import is_api_judge
     from mmar_models import _format_chat_messages
 
     resolved = _resolve_render_judge_label(label) or label
@@ -2093,10 +1947,6 @@ def render_judge_prompt(
         )
         return text if text.endswith("\n") else f"{text}\n"
 
-    if is_batch_api_judge(resolved):
-        raise ValueError(
-            f"{resolved!r} is a Batch API judge and only supports text formats"
-        )
     if not judge_can_hear_audio(resolved):
         raise ValueError(
             f"{resolved!r} cannot hear audio; use a suite or live API judge"

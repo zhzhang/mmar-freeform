@@ -10,10 +10,8 @@ from typing import Any
 
 from audio_flamingo_runtime import resolve_model_dir
 from mmar_common import (
-    AF3_THINK_SUFFIX,
     AF_NEXT_THINK_SUFFIX,
     ASSISTANT_THINK_OPEN,
-    MUSIC_FLAMINGO_THINK_SUFFIX,
     PREFIX_ASSISTANT_THINK_LABELS,
     build_mmar_freeform_prompt,
     build_mmar_prompt,
@@ -21,7 +19,6 @@ from mmar_common import (
     join_vllm_reasoning,
     parse_choice_output,
     parse_freeform_output,
-    parse_music_flamingo_output,
     parse_think_tagged_output,
     vllm_reasoning_text,
 )
@@ -591,18 +588,6 @@ def _parse_fn_for(
     *,
     label: str = "",
 ) -> Callable:
-    if default is parse_music_flamingo_output:
-        fallback = (
-            parse_freeform_output
-            if _prompt_mode(args) == "freeform"
-            else parse_think_tagged_output
-        )
-
-        def parse(raw_text, choices=None):
-            return parse_music_flamingo_output(raw_text, choices, fallback=fallback)
-
-        return parse
-
     if _prompt_mode(args) == "freeform":
         if default is parse_think_tagged_output:
             # Free-form still strips <think> blocks; choice matching is skipped.
@@ -704,10 +689,6 @@ AF_NEXT_SYSTEM = (
     "audio—regardless of whether the user calls it audio, speech, music, or "
     "sound."
 )
-
-# Injected by nvidia/music-flamingo-hf chat_template.jinja when there is no
-# system turn.
-MUSIC_FLAMINGO_SYSTEM = "You are a helpful assistant."
 
 
 def _af_next_prompt(sample: dict, args: SimpleNamespace | None = None) -> str:
@@ -1198,10 +1179,6 @@ def generate_batch(
                         if _prompt_mode(args) == "freeform"
                         else AF_NEXT_THINK_SUFFIX
                     )
-                elif label == "music-flamingo":
-                    think_suffix = MUSIC_FLAMINGO_THINK_SUFFIX
-                else:
-                    think_suffix = AF3_THINK_SUFFIX
         assistant_prefill = (
             ASSISTANT_THINK_OPEN
             if thinking_enabled(label, args) and label in PREFIX_ASSISTANT_THINK_LABELS

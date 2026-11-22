@@ -7,7 +7,6 @@ Also supports:
 
     latent-reasoning-results          # legacy run_id folders
       exp-mmar-question-difficulty/<run_id>/
-      mmar/af3/<run_id>/
       mmar/af-next-think/<run_id>/
     mmar-freeform-5-shot-thinking     # API collated pack (volume root)
 

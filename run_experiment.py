@@ -13,7 +13,6 @@ FlashInfer cubins baked at image build). Each model flattens remaining
 questions (and leftover shots) into one ``generate()`` / ``chat()``.
 Inference backends:
   - af-next-think: native MusicFlamingo (HF fallback)
-  - music-flamingo: native MusicFlamingo (HF fallback)
   - qwen3-omni: thinker-only (Qwen3-Omni-30B-A3B-Thinking)
   - qwen3-omni-instruct / phi-4-multimodal / gemma-4-e4b /
     gemma-4-12b / nemotron-3-nano-omni: vLLM audio / chat
@@ -37,9 +36,6 @@ Usage:
     uv run modal run --detach run_experiment.py
     uv run modal run --detach run_experiment.py \\
       --models af-next-think --n-shots 2
-    uv run modal run --detach seed_volume.py --datasets none --models music-flamingo
-    uv run modal run --detach run_experiment.py \\
-      --models music-flamingo --n-shots 5 --seed 42
     uv run modal run --detach seed_volume.py --datasets none \\
       --models phi-4-multimodal,gemma-4-e4b,qwen3-omni-instruct,nemotron-3-nano-omni
     uv run modal run --detach run_experiment.py \\

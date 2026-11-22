@@ -22,7 +22,6 @@ GPU type still comes from each `MODEL_SPECS` entry.
 | Label | Checkpoint | Backend |
 |-------|------------|---------|
 | `af-next-think` | `nvidia/audio-flamingo-next-think-hf` | vLLM 0.28 MusicFlamingo (HF fallback); `T=0.2, max_tokens=2048, rep=1.2` |
-| `music-flamingo` | `nvidia/music-flamingo-think-2601-hf` | vLLM 0.28 MusicFlamingo (HF fallback); `T=0.7, top_p=0.9, max_tokens=2048` |
 | `qwen3-omni` | `Qwen/Qwen3-Omni-30B-A3B-Thinking` | vLLM 0.28 thinker-only (B200); `T=0.6, top_p=0.95, top_k=20, max_tokens=16384` |
 | `voxtral-small-24b` | `mistralai/Voxtral-Small-24B-2507` | vLLM 0.28 Mistral audio (B200); `T=0.2, top_p=0.95, max_tokens=2048` |
 | `phi-4-multimodal` | `microsoft/Phi-4-multimodal-instruct` | vLLM 0.28 + speech LoRA (L40S) |
@@ -35,13 +34,7 @@ GPU type still comes from each `MODEL_SPECS` entry.
 ```bash
 uv run modal run seed_volume.py --datasets mmar \
   --models af-next-think,qwen3-omni,voxtral-small-24b
-
-# Freeform judge weights (add more aliases as needed)
-uv run modal run seed_volume.py --datasets none --models qwen2.5-3b
-uv run modal run --detach seed_volume.py --datasets none --models qwen3.6-35b-a3b-fp8
 ```
-
-Judge aliases: `qwen2.5-3b`, `qwen3.6-35b-a3b-fp8` (→ `Qwen/Qwen3.6-35B-A3B-FP8`).
 
 ## Run
 
@@ -81,7 +74,7 @@ writes `models/<label>/predictions.jsonl`. Grade those predictions with
 - Plain vLLM (`af-next`, `qwen3-omni`, `voxtral`, Gemma, Nemotron): one
   prompt per question with `SamplingParams(n=n_shots)` so N samples share
   prefill. Seed is per question (not per shot).
-- HF fallback (AF-Next / Music Flamingo if vLLM load fails): duplicate the
+- HF fallback (AF-Next if vLLM load fails): duplicate the
   prompt per shot. Prefix caching reuses identical audio/prompt prefixes
   where enabled.
 - **`max_num_seqs`**: set from measured average sequence length against the
@@ -117,9 +110,6 @@ writes `models/<label>/predictions.jsonl`. Grade those predictions with
   and `enable_prefix_caching`. Qwen3 Thinking is decode-heavy
   (`max_tokens=2048`; measured outputs peak ~870).
 - `--max-num-seqs` / `--gpu-memory-utilization`: optional CLI escape hatches.
-- For the `qwen3.6-35b-a3b-fp8` MoE judge, `enforce_eager: False` was worth
-  332 → 4,824 output tok/s on an H100; only 3B params are active per token, so
-  decode is kernel-launch bound and CUDA graphs dominate everything else.
 - Watch logs for `Avg generation throughput`, `Running: N reqs`, and
   `GPU KV cache usage` (`disable_log_stats: False`). Confirm loaders print
   `vLLM ready` rather than `falling back to` HF.
@@ -166,7 +156,7 @@ grades every pack model's shots, including its own. Pass ids to run only
 those judges. Shots that already have a verdict for the same judge key are
 skipped. Pass `--force` to replace existing verdicts.
 
-vLLM suite / dedicated judges run on Modal (this script starts a detached
+vLLM suite judges run on Modal (this script starts a detached
 App). API judges (`gemini-3.7-flash`; aliases
 `gemini-3.7-mini`, `gemini`, or `api`) run locally against the
 same pack and do not start Modal. Empty `--judge-model-id` stays
@@ -176,28 +166,21 @@ Default runs both `with_gt` (text, sees gold) and `free` (audio, no gold).
 `all`). Audio is attached when that format sets `audio_included`.
 
 ```bash
-# Seed judge weights first if needed
-uv run modal run seed_volume.py --datasets none --models qwen3.6-35b-a3b-fp8
-
 # All suite judges
 uv run run_judges.py
 
 # Only these suite judges
 uv run run_judges.py \
-  --judge-model-id qwen3-omni-instruct,phi-4-multimodal
-
-# Dedicated text judge
-uv run run_judges.py \
-  --judge-model-id qwen3.6-35b-a3b-fp8
+  --judge-model-id qwen3-omni,phi-4-multimodal
 
 # Promote the first selected judge to primary
 uv run run_judges.py \
-  --judge-model-id Qwen/Qwen3.6-35B-A3B-FP8 \
+  --judge-model-id qwen3-omni \
   --make-primary
 
 # Replace existing verdicts for this judge
 uv run run_judges.py \
-  --judge-model-id qwen3.6-35b-a3b-fp8 \
+  --judge-model-id qwen3-omni \
   --force
 
 # API judges (local; needs GEMINI_API_KEY)
@@ -211,7 +194,7 @@ uv run run_judges.py --grade-prompt all
 
 # Mixed: API locally while Modal vLLM runs detached
 uv run run_judges.py \
-  --judge-model-id gemini-3.7-flash,qwen3-omni-instruct
+  --judge-model-id gemini-3.7-flash,qwen3-omni
 
 # Recompute Alt-Test scores from existing local verdicts
 uv run run_judges.py --accuracy-only
@@ -244,7 +227,7 @@ shot. Migrate them locally (no GPU) into the multi-judge schema:
 ```bash
 uv run python retrofit_judges.py
 uv run python retrofit_judges.py --run 20260807T145000Z --dry-run
-uv run python retrofit_judges.py --set-primary qwen2.5-3b-instruct --backup
+uv run python retrofit_judges.py --set-primary qwen3-omni --backup
 ```
 
 This rewrites `models/*/predictions.jsonl`, stamps `judges` /
@@ -282,15 +265,15 @@ Freeform shot records store per-judge verdicts under `shots[].judges`:
   "shot_index": 0,
   "answer_prediction": "…",
   "correct": false,
-  "grader": "Qwen/Qwen2.5-3B-Instruct",
+  "grader": "Qwen/Qwen3-Omni-30B-A3B-Thinking",
   "grader_output": "0",
   "judges": {
-    "qwen2.5-3b-instruct": {
+    "qwen3-omni__with_gt__gold": {
       "correct": false,
       "verdict": "fail",
       "output": "0",
       "generation": "…full judge generation ending in <answer>0</answer>…",
-      "model_id": "Qwen/Qwen2.5-3B-Instruct"
+      "model_id": "Qwen/Qwen3-Omni-30B-A3B-Thinking"
     }
   }
 }

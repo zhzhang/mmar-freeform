@@ -14,13 +14,8 @@ from pathlib import Path
 from typing import Any
 
 CHOICE_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-AF3_THINK_SUFFIX = "Please think and reason about the input audio before you respond."
 AF_NEXT_THINK_SUFFIX = (
     "Reason step by step with timestamps, then give the final answer."
-)
-MUSIC_FLAMINGO_THINK_SUFFIX = (
-    "Output the thinking process in <think> </think> and final answer in "
-    "<answer> </answer>"
 )
 ANSWER_MARKERS = (
     r"therefore[, ]+the answer is[:\s]*",
@@ -33,8 +28,8 @@ GEMMA_ANSWER_LINE_RE = re.compile(
     r"^\s*\*\*\s*Answer:\s*(?:\*\*)?\s*(.+)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
-# Music Flamingo sometimes uses an MC-style prefix instead of ``Answer:``.
-MUSIC_FLAMINGO_LETTERED_ANSWER_RE = re.compile(
+# Some replies use an MC-style prefix instead of ``Answer:``.
+LETTERED_ANSWER_RE = re.compile(
     r"^\s*\(\s*[A-E]\s*\)\s*[.:]?\s*(.+)\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -47,7 +42,6 @@ ASSISTANT_THINK_OPEN = "<think>\n"
 PREFIX_ASSISTANT_THINK_LABELS = frozenset(
     {
         "af-next-think",
-        "music-flamingo",
     }
 )
 _EMPTY_THINK_TAIL_RE = re.compile(r"<think>\s*</think>\s*$", re.IGNORECASE)
@@ -331,15 +325,6 @@ def build_mmar_freeform_prompt(
         if with_timestamps
         else "Reason step by step before answering"
     )
-    # Music Flamingo uses <think>/<answer> tags instead of the Answer: line.
-    if think_suffix == MUSIC_FLAMINGO_THINK_SUFFIX:
-        prompt = (
-            "Listen to the audio and answer the question. "
-            f"{reason}.\n"
-            f"This question is: {question}\n"
-            f"\n{think_suffix}"
-        )
-        return prompt
     prompt = (
         "Listen to the audio and answer the question. "
         f"{reason}, then give a concise, answer in a single final line in exactly this format:\n"
@@ -530,27 +515,6 @@ def parse_answer_tagged_output(raw_text, choices=None):
     return thinking_prediction, answer_prediction
 
 
-def parse_music_flamingo_output(raw_text, choices=None, *, fallback=None):
-    """Music Flamingo: special answer lines first, then ``<answer>`` tags, then fallback.
-
-    Tries ``**Answer:**`` / ``(A).``-``(E).`` before ``<answer>`` tags. Creators
-    instruct wrapping the final answer in tags, but the model often emits an
-    MC-style ``(A). <answer>`` line instead.
-    """
-    special = _parse_special_answer_output(raw_text, choices)
-    if special is not None:
-        return special
-    tagged = parse_answer_tagged_output(raw_text, choices)
-    if tagged is not None:
-        thinking_prediction, answer_prediction = tagged
-        inner = split_special_answer_line(answer_prediction)
-        if inner is not None:
-            answer_prediction = inner[1]
-        return thinking_prediction, answer_prediction
-    parser = fallback or parse_think_tagged_output
-    return parser(raw_text, choices)
-
-
 def _answer_line_value(match: re.Match[str], *, strip_stars: bool) -> str:
     value = match.group(1).strip()
     if strip_stars:
@@ -582,7 +546,7 @@ def split_special_answer_line(text: str) -> tuple[str, str] | None:
         text,
         (
             (GEMMA_ANSWER_LINE_RE, True),
-            (MUSIC_FLAMINGO_LETTERED_ANSWER_RE, False),
+            (LETTERED_ANSWER_RE, False),
         ),
     )
 
@@ -883,7 +847,7 @@ def ensure_judge_schema(
             model_id = (
                 shot.get("grader") or record.get("grader") or fallback_model_id or ""
             )
-            label = judge_label(model_id) or fallback_label or "qwen2.5-3b-instruct"
+            label = judge_label(model_id) or fallback_label or "legacy"
             if shot.get("correct") is not None or shot.get("grader_output") is not None:
                 legacy_out = shot.get("grader_output")
                 judges[label] = {
