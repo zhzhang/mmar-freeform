@@ -566,14 +566,12 @@ def parse_shot_indices(first_shot_only: bool) -> tuple[int, ...] | None:
 FIELD_QUESTION = 'Question: "{question}"'
 FIELD_GOLD = 'Ground truth: "{answer}"'
 FIELD_PREDICTION = 'Candidate Response: "{prediction}"'
-FIELD_DESCRIPTION = 'Description of audio: "{description}"'
 
 # Dummy values used by ``python grader.py`` so variable slots stay visible.
 PROMPT_PLACEHOLDERS: dict[str, str] = {
     "question": "{question}",
     "answer": "{answer}",
     "prediction": "{prediction}",
-    "description": "{description}",
 }
 
 
@@ -605,16 +603,14 @@ class JudgeFormat:
         question: str,
         answer: str = "",
         prediction: str,
-        description: str = "",
     ) -> str:
-        """Question / gold / description / test-taker answer block (no audio)."""
+        """Question / gold / test-taker answer block (no audio)."""
         return "\n".join(
             _fill_placeholders(
                 line,
                 question=question,
                 answer=answer,
                 prediction=prediction,
-                description=description,
             )
             for line in self.field_templates
         )
@@ -625,14 +621,12 @@ class JudgeFormat:
         question: str,
         answer: str = "",
         prediction: str,
-        description: str = "",
     ) -> str:
         """Fields plus closer — used after the clip on the nongold audio path."""
         text = self.fields(
             question=question,
             answer=answer,
             prediction=prediction,
-            description=description,
         )
         if self.closer:
             return f"{text}\n\n{self.closer}"
@@ -644,7 +638,6 @@ class JudgeFormat:
         question: str,
         answer: str = "",
         prediction: str,
-        description: str = "",
     ) -> str:
         """Full text prompt (gold vLLM path and API judges)."""
         parts = [
@@ -653,7 +646,6 @@ class JudgeFormat:
                 question=question,
                 answer=answer,
                 prediction=prediction,
-                description=description,
             ),
         ]
         if self.closer:
@@ -663,8 +655,7 @@ class JudgeFormat:
 
 # Named formats. Edit this table — not the builders.
 JUDGE_FORMATS: dict[str, JudgeFormat] = {
-    # No-GT formats normally hear the clip (audio_included=True). Exception:
-    # ``cascade`` substitutes a text caption for the wav.
+    # No-GT formats always hear the clip (audio_included=True).
     "judge_no_gt": JudgeFormat(  #  Discretionary, No GT, With Audio
         prompt=(
             "Your task is to judge whether the given response to an audio question "
@@ -825,30 +816,6 @@ JUDGE_FORMATS: dict[str, JudgeFormat] = {
         audio_included=True,
         field_templates=(FIELD_QUESTION, FIELD_PREDICTION),
     ),
-    "cascade": JudgeFormat(
-        prompt=(
-            "Your task is to judge whether the given response to an audio question "
-            "is correct or not. You are given a description of audio, a question "
-            "about that audio, and the response you are judging.\n"
-        ),
-        closer=(
-            "The response should fully answer the question and must not be vague.\n"
-            "For numeric answers, the relative error, defined as |response - ground "
-            "truth| / mean(response, ground truth), must be less than 1% for the "
-            "response to be judged as a correct match. Here, if the ground truth is "
-            "a specific numeric quantity but the response is a range, then they don't "
-            "match (even if the range contains the ground truth).\n"
-            "\n"
-            "To the best of your knowledge: Does the provided response answer the "
-            "question correctly, given the description of audio? This is part of an "
-            "automated evaluation process, therefore you MUST OUTPUT your final answer "
-            'as "Incorrect" '
-            'or "Correct" on a single line final line with the format:\nAnswer: <Incorrect or Correct>\n'
-            "Think step by step and end your response with the format:\nAnswer: <Incorrect or Correct>\n"
-        ),
-        audio_included=False,
-        field_templates=(FIELD_DESCRIPTION, FIELD_QUESTION, FIELD_PREDICTION),
-    ),
     "neutral_with_gt": JudgeFormat(  # Neutral, With GT, With Audio
         prompt=(
             "Your task is to judge whether the given response to an audio question "
@@ -918,14 +885,12 @@ def build_grade_input_fields(
     prediction: str,
     prompt: str | None = None,
     include_gold: bool = DEFAULT_INCLUDE_GOLD,
-    description: str = "",
 ) -> str:
     """Question / gold / test-taker answer block (no audio)."""
     return get_judge_format(prompt, include_gold).fields(
         question=question,
         answer=answer,
         prediction=prediction,
-        description=description,
     )
 
 
@@ -945,14 +910,12 @@ def build_grade_prompt(
     prediction: str,
     prompt: str | None = None,
     include_gold: bool = DEFAULT_INCLUDE_GOLD,
-    description: str = "",
 ) -> str:
     """Assemble the full text judge prompt for gold or free."""
     return get_judge_format(prompt, include_gold).as_text(
         question=question,
         answer=answer,
         prediction=prediction,
-        description=description,
     )
 
 
@@ -962,7 +925,6 @@ def build_grade_gold_prefix(
     answer: str,
     prompt: str | None = None,
     include_gold: bool = True,
-    description: str = "",
 ) -> str:
     """Cached gold prefix: prompt plus every field before the response."""
     fmt = get_judge_format(prompt, include_gold=include_gold)
@@ -972,7 +934,6 @@ def build_grade_gold_prefix(
             question=question,
             answer=answer,
             prediction="",
-            description=description,
         )
         for template in fmt.field_templates
         if template != FIELD_PREDICTION
@@ -2009,168 +1970,6 @@ def resolve_grade_audio_path(audio_path: str | None) -> Path | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Cascade: Gemini captions stand in for the clip
-# ---------------------------------------------------------------------------
-
-CASCADE_PROMPT_NAME = "cascade"
-CASCADE_DESCRIPTIONS_NAME = "cascade_descriptions.json"
-_REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_GEMINI_DESC_JUDGE_DIR = _REPO_ROOT / "outputs" / "gemini-desc-judge"
-DEFAULT_MMAR_DESCRIPTIONS_DIR = _REPO_ROOT / "outputs" / "mmar-descriptions"
-DEFAULT_CASCADE_CAPTION_MODEL = "gemini-3.7-flash"
-
-
-def _shot_caption_text(shot: dict) -> str:
-    text = shot.get("answer_prediction")
-    if text is None or str(text).strip() == "":
-        text = shot.get("model_output")
-    return str(text or "").strip()
-
-
-def collect_gemini_cascade_descriptions(
-    *,
-    gemini_desc_dir: Path | None = None,
-    mmar_descriptions_dir: Path | None = None,
-    caption_model: str = DEFAULT_CASCADE_CAPTION_MODEL,
-) -> dict[str, str]:
-    """Attempt-1 Gemini captions keyed by question id.
-
-    Prefers ``outputs/gemini-desc-judge/descriptions.jsonl`` (attempt == 1).
-    Falls back to shot 0 of ``mmar-descriptions/models/<caption_model>/``.
-    """
-    desc_dir = Path(gemini_desc_dir or DEFAULT_GEMINI_DESC_JUDGE_DIR)
-    jsonl_path = desc_dir / "descriptions.jsonl"
-    out: dict[str, str] = {}
-    if jsonl_path.is_file():
-        with jsonl_path.open(encoding="utf-8") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    row = json.loads(stripped)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(row, dict):
-                    continue
-                try:
-                    attempt = int(row.get("attempt", 0))
-                except (TypeError, ValueError):
-                    continue
-                if attempt != 1:
-                    continue
-                qid = str(row.get("question_id") or "").strip()
-                text = str(row.get("description") or "").strip()
-                if qid and text and qid not in out:
-                    out[qid] = text
-        if out:
-            return out
-
-    pack = Path(mmar_descriptions_dir or DEFAULT_MMAR_DESCRIPTIONS_DIR)
-    pred_path = pack / "models" / caption_model / "predictions.jsonl"
-    if not pred_path.is_file():
-        return out
-    with pred_path.open(encoding="utf-8") as handle:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                record = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(record, dict):
-                continue
-            qid = str(record.get("id") or "").strip()
-            if not qid or qid in out:
-                continue
-            shots = list(record.get("shots") or [])
-            shots.sort(key=lambda s: int(s.get("shot_index") or 0))
-            caption = ""
-            for shot in shots:
-                if int(shot.get("shot_index", -1)) == 0:
-                    caption = _shot_caption_text(shot)
-                    break
-            if not caption and shots:
-                caption = _shot_caption_text(shots[0])
-            if caption:
-                out[qid] = caption
-    return out
-
-
-def load_cascade_descriptions(pack_dir: Path | str) -> dict[str, str]:
-    """Load ``cascade_descriptions.json`` from a judging pack, if present."""
-    path = Path(pack_dir) / CASCADE_DESCRIPTIONS_NAME
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    out: dict[str, str] = {}
-    for key, value in payload.items():
-        qid = str(key or "").strip()
-        text = str(value or "").strip()
-        if qid and text:
-            out[qid] = text
-    return out
-
-
-def write_cascade_descriptions(
-    pack_dir: Path | str, descriptions: dict[str, str]
-) -> Path:
-    """Atomically write ``{question_id: caption}`` into the judging pack."""
-    import os
-    import shutil
-    import tempfile
-
-    pack = Path(pack_dir)
-    pack.mkdir(parents=True, exist_ok=True)
-    path = pack / CASCADE_DESCRIPTIONS_NAME
-    cleaned = {
-        str(qid): str(text)
-        for qid, text in descriptions.items()
-        if str(qid).strip() and str(text).strip()
-    }
-    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=pack)
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(cleaned, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-        shutil.move(str(tmp_path), path)
-    except Exception:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise
-    return path
-
-
-def cascade_description_for(
-    qid: str,
-    descriptions: dict[str, str],
-    *,
-    prompt_name: str | None = None,
-) -> str:
-    """Return the caption for ``qid`` when grading ``cascade``; else ``\"\"``.
-
-    Raises ``SystemExit`` if the format needs a caption and none is stored.
-    """
-    name = str(prompt_name or "").strip().lower()
-    if name != CASCADE_PROMPT_NAME:
-        return ""
-    text = str(descriptions.get(str(qid).strip()) or "").strip()
-    if text:
-        return text
-    raise SystemExit(
-        f"cascade grading needs a Gemini caption for question id={qid!r}; "
-        f"missing from {CASCADE_DESCRIPTIONS_NAME}"
-    )
-
-
 def _nongold_audio_prompt_string(
     label: str, instructions: str, fields: str, closer: str = ""
 ) -> str:
@@ -2362,7 +2161,6 @@ def render_judge_prompt(
             question=question,
             answer=answer,
             prediction=prediction,
-            description=str(job.get("description") or ""),
         )
         return text if text.endswith("\n") else f"{text}\n"
 
@@ -2743,7 +2541,6 @@ def _text_grade_user_messages(
                         prediction=str(job.get("prediction") or ""),
                         prompt=prompt_name,
                         include_gold=include_gold,
-                        description=str(job.get("description") or ""),
                     ),
                 }
             ],
@@ -2806,7 +2603,6 @@ def _vllm_text_grade_prompt(
             prediction=str(job.get("prediction") or ""),
             prompt=prompt_name,
             include_gold=include_gold,
-            description=str(job.get("description") or ""),
         ),
         chat_template_kwargs=handle.get("chat_template_kwargs") or {},
     )
@@ -3081,7 +2877,6 @@ def grade_shot_batch(
                 prediction=str(job.get("prediction") or ""),
                 prompt=name,
                 include_gold=gold,
-                description=str(job.get("description") or ""),
             ),
             chat_template_kwargs=chat_template_kwargs,
         )
@@ -3204,11 +2999,6 @@ def grade_predictions_file(
     )
     n_samples = max(1, int(n_samples))
     allowed = {int(i) for i in shot_indices} if shot_indices is not None else None
-    cascade_descs = (
-        load_cascade_descriptions(predictions_path.parent.parent.parent)
-        if prompt_name == CASCADE_PROMPT_NAME
-        else {}
-    )
 
     records: list[dict] = []
     with open(predictions_path, encoding="utf-8") as handle_in:
@@ -3310,11 +3100,6 @@ def grade_predictions_file(
                         "audio_path": record.get("audio_path"),
                         "prompt": prompt_name,
                         "include_gold": include_gold,
-                        "description": cascade_description_for(
-                            str(record.get("id") or ""),
-                            cascade_descs,
-                            prompt_name=prompt_name,
-                        ),
                     }
                 )
                 owners.append([(record_index, shot_index)])
@@ -3567,8 +3352,6 @@ def grade_predictions_pack(
     n_samples = max(1, int(n_samples))
     fallback_prompt, fallback_gold, fallback_key = mode_specs[0]
     keys = [key for _, _, key in mode_specs]
-    needs_cascade = any(name == CASCADE_PROMPT_NAME for name, _, _ in mode_specs)
-    cascade_descs = load_cascade_descriptions(pack) if needs_cascade else {}
 
     files: dict[str, list[dict]] = {}
     by_id: dict[str, dict[str, dict]] = {}
@@ -3687,11 +3470,6 @@ def grade_predictions_pack(
                                 "prompt": name,
                                 "include_gold": gold,
                                 "judge_key": key,
-                                "description": cascade_description_for(
-                                    qid,
-                                    cascade_descs,
-                                    prompt_name=name,
-                                ),
                             }
                         )
                         owners.append([(gradee, qid, shot_index, key)])
@@ -4067,7 +3845,6 @@ def format_grade_prompt_inspection(
     chunks.append(FIELD_QUESTION)
     chunks.append(FIELD_GOLD)
     chunks.append(FIELD_PREDICTION)
-    chunks.append(FIELD_DESCRIPTION)
     chunks.append("")
 
     n = len(selected)
@@ -4089,8 +3866,6 @@ def format_grade_prompt_inspection(
                 chunks.append("  fields       : Question + Ground truth + Response")
             else:
                 chunks.append("  fields       : Question + Response")
-        elif FIELD_DESCRIPTION in fmt.field_templates:
-            chunks.append("  fields       : Description + Question + Response")
         elif fmt.include_gold:
             chunks.append("  fields       : Question + Ground truth + Response")
         else:

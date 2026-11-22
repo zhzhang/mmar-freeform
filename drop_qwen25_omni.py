@@ -29,8 +29,6 @@ from modal_cache import (
     FREEFORM_THINKING_VOLUME_NAME,
     JUDGING_MOUNT,
     JUDGING_VOLUME_NAME,
-    MMAR_DESCRIPTIONS_MOUNT,
-    MMAR_DESCRIPTIONS_VOLUME_NAME,
     MMAR_FREEFORM_THINKING_MOUNT,
     MMAR_FREEFORM_THINKING_VOLUME_NAME,
     RESULTS_MOUNT,
@@ -40,7 +38,6 @@ from modal_cache import (
     compile_cache_dir,
     freeform_thinking_volume,
     judging_volume,
-    mmar_descriptions_volume,
     mmar_freeform_thinking_volume,
     results_volume,
     volume,
@@ -242,12 +239,6 @@ def drop_local(*, drop_models: set[str], dry_run: bool) -> dict[str, Any]:
         dry_run=dry_run,
     )
     _print_block("local experiment", results["experiment"])
-    results["descriptions"] = drop_experiment_pack(
-        OUTPUTS_DIR / "mmar-descriptions",
-        drop_models=drop_models,
-        dry_run=dry_run,
-    )
-    _print_block("local descriptions", results["descriptions"])
     results["judging"] = drop_judging_tree(
         OUTPUTS_DIR / "mmar-judging",
         drop_models=drop_models,
@@ -284,29 +275,6 @@ def drop_experiment_volume(
     stats["where"] = f"volume:{MMAR_FREEFORM_THINKING_VOLUME_NAME}"
     if not dry_run:
         mmar_freeform_thinking_volume.commit()
-    _print_block(stats["where"], stats)
-    return stats
-
-
-@app.function(
-    image=cpu_image,
-    timeout=30 * 60,
-    volumes={MMAR_DESCRIPTIONS_MOUNT: mmar_descriptions_volume},
-)
-def drop_descriptions_volume(
-    models: list[str] | None = None,
-    dry_run: bool = False,
-) -> dict[str, Any]:
-    mmar_descriptions_volume.reload()
-    drop_models = set(models or DEFAULT_DROP)
-    stats = drop_experiment_pack(
-        Path(MMAR_DESCRIPTIONS_MOUNT),
-        drop_models=drop_models,
-        dry_run=dry_run,
-    )
-    stats["where"] = f"volume:{MMAR_DESCRIPTIONS_VOLUME_NAME}"
-    if not dry_run:
-        mmar_descriptions_volume.commit()
     _print_block(stats["where"], stats)
     return stats
 
@@ -424,7 +392,6 @@ def modal_main(
     if skip_modal:
         return
     drop_experiment_volume.remote(models=sorted(drop_models), dry_run=dry_run)
-    drop_descriptions_volume.remote(models=sorted(drop_models), dry_run=dry_run)
     drop_judging_volume.remote(models=sorted(drop_models), dry_run=dry_run)
     drop_legacy_freeform_volume.remote(models=sorted(drop_models), dry_run=dry_run)
     drop_results_volume.remote(models=sorted(drop_models), dry_run=dry_run)

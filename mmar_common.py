@@ -244,26 +244,6 @@ def build_mmar_freeform_prompt(
     return prompt
 
 
-DESCRIPTION_PROMPT = (
-    "Listen to the audio closely, then give a detailed description of what you hear. This involves:\n"
-    "- Transcribing any speech verbatim if it exists and attributing the speaker of each utterance, both named and unnamed.\n"
-    "- Captioning the audio in detail, including all auditory foreground events and background noise.\n"
-    "- Being as specific and thorough as possible in describing the properties and sequencing of the speech and events in the audio.\n"
-)
-
-
-def build_mmar_description_prompt() -> str:
-    """Caption + transcribe prompt (no MMAR question or choices)."""
-    return DESCRIPTION_PROMPT
-
-
-def parse_description_output(raw_text, choices=None):
-    """Store the full completion as the answer (no think/answer parsing)."""
-    del choices
-    text = (raw_text or "").strip()
-    return "", text
-
-
 def _last_think_close_span(text: str) -> tuple[int, int] | None:
     """Byte span of the last ``</think>`` (case-insensitive), if any."""
     idx = text.lower().rfind(THINK_CLOSE)

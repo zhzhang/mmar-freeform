@@ -15,13 +15,11 @@ from mmar_common import (
     ASSISTANT_THINK_OPEN,
     MUSIC_FLAMINGO_THINK_SUFFIX,
     PREFIX_ASSISTANT_THINK_LABELS,
-    build_mmar_description_prompt,
     build_mmar_freeform_prompt,
     build_mmar_prompt,
     ensure_assistant_think_open,
     join_vllm_reasoning,
     parse_choice_output,
-    parse_description_output,
     parse_freeform_output,
     parse_music_flamingo_output,
     parse_think_tagged_output,
@@ -614,8 +612,6 @@ def _prompt_mode(args: SimpleNamespace) -> str:
     mode = str(getattr(args, "prompt_mode", "mc") or "mc").lower()
     if mode in {"freeform", "free_form", "open"}:
         return "freeform"
-    if mode in {"description", "describe", "caption"}:
-        return "description"
     return "mc"
 
 
@@ -626,8 +622,6 @@ def _build_prompt(
     think_suffix: str | None = None,
     with_timestamps: bool = False,
 ) -> str:
-    if _prompt_mode(args) == "description":
-        return build_mmar_description_prompt()
     if _prompt_mode(args) == "freeform":
         # AF-Next: bake timestamps into the reason sentence instead of appending
         # AF_NEXT_THINK_SUFFIX (which would duplicate "reason step by step").
@@ -660,8 +654,6 @@ def _parse_fn_for(
 
         return parse
 
-    if _prompt_mode(args) == "description":
-        return parse_description_output
     if _prompt_mode(args) == "freeform":
         if default is parse_think_tagged_output:
             # Free-form still strips <think> blocks; choice matching is skipped.
@@ -775,7 +767,7 @@ def _af_next_prompt(sample: dict, args: SimpleNamespace | None = None) -> str:
     mode = _prompt_mode(ns)
     freeform = mode == "freeform"
     think_suffix = None
-    if mode != "description" and thinking_enabled("af-next-think", ns):
+    if thinking_enabled("af-next-think", ns):
         think_suffix = None if freeform else AF_NEXT_THINK_SUFFIX
     question = _build_prompt(
         sample,
@@ -797,7 +789,7 @@ def _af_next_prompt(sample: dict, args: SimpleNamespace | None = None) -> str:
 def _music_flamingo_prompt(sample: dict, args: SimpleNamespace | None = None) -> str:
     ns = args or SimpleNamespace(prompt_mode="mc")
     think_suffix = None
-    if _prompt_mode(ns) != "description" and thinking_enabled("music-flamingo", ns):
+    if thinking_enabled("music-flamingo", ns):
         think_suffix = MUSIC_FLAMINGO_THINK_SUFFIX
     question = _build_prompt(sample, ns, think_suffix=think_suffix)
     assistant = ASSISTANT_THINK_OPEN if thinking_enabled("music-flamingo", ns) else ""
@@ -1329,11 +1321,7 @@ def generate_batch(
                         else AF_NEXT_THINK_SUFFIX
                     )
                 elif label == "music-flamingo":
-                    think_suffix = (
-                        None
-                        if _prompt_mode(args) == "description"
-                        else MUSIC_FLAMINGO_THINK_SUFFIX
-                    )
+                    think_suffix = MUSIC_FLAMINGO_THINK_SUFFIX
                 else:
                     think_suffix = AF3_THINK_SUFFIX
         assistant_prefill = (

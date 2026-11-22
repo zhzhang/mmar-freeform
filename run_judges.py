@@ -41,18 +41,6 @@ on the same triple-labeled shots.
     # Any JUDGE_FORMATS key (text-only variant; dedicated judges OK)
     uv run run_judges.py --grade-prompt neutral_with_gt_no_audio
 
-    # Cascade: Gemini audio captions stand in for the clip (text-only, no gold).
-    # Same labeled pack + prompt as Modal suite judges; Gemini runs locally.
-    export GEMINI_API_KEY=...
-    uv run run_judges.py --judge-model-id gemini-3.7-flash --grade-prompt cascade
-
-    # Modal suite judges on cascade (GPU), same captions / question filter
-    uv run run_judges.py --grade-prompt cascade
-
-    # Mixed: Gemini API locally while Modal vLLM runs detached
-    uv run run_judges.py \\
-      --judge-model-id gemini-3.7-flash,qwen3-omni --grade-prompt cascade
-
     # Every format in JUDGE_FORMATS
     uv run run_judges.py --grade-prompt all
 
@@ -1747,68 +1735,6 @@ def _local_model_labels(models: str) -> list[str]:
     return labels
 
 
-def _ensure_cascade_descriptions(pack_dir: Path) -> dict[str, str]:
-    """Write Gemini attempt-1 captions into the pack if cascade is grading."""
-    from grader import (
-        CASCADE_DESCRIPTIONS_NAME,
-        collect_gemini_cascade_descriptions,
-        load_cascade_descriptions,
-        write_cascade_descriptions,
-    )
-
-    existing = load_cascade_descriptions(pack_dir)
-    if existing:
-        print(
-            f"[run-judges] cascade captions already on pack "
-            f"n={len(existing)} path={pack_dir / CASCADE_DESCRIPTIONS_NAME}"
-        )
-        return existing
-    descriptions = collect_gemini_cascade_descriptions()
-    if not descriptions:
-        raise SystemExit(
-            "cascade grading needs Gemini audio captions. Expected "
-            "outputs/gemini-desc-judge/descriptions.jsonl (attempt 1) "
-            "or outputs/mmar-descriptions/models/gemini-3.7-flash/predictions.jsonl"
-        )
-    path = write_cascade_descriptions(pack_dir, descriptions)
-    print(f"[run-judges] wrote {len(descriptions)} cascade captions -> {path}")
-    return descriptions
-
-
-def _filter_cascade_question_ids(
-    question_ids: list[str],
-    descriptions: dict[str, str],
-) -> list[str]:
-    """Keep labeled questions that have a Gemini caption (required for cascade)."""
-    have = set(descriptions)
-    kept = [qid for qid in question_ids if qid in have]
-    dropped = len(question_ids) - len(kept)
-    if dropped:
-        print(
-            f"[run-judges] cascade: dropped {dropped} labeled question(s) "
-            f"without Gemini captions; grading {len(kept)}"
-        )
-    if not kept:
-        raise SystemExit(
-            "cascade grading: no overlap between labeled questions and "
-            "Gemini captions in cascade_descriptions.json"
-        )
-    return kept
-
-
-def _upload_cascade_descriptions(pack_dir: Path) -> None:
-    """Push ``cascade_descriptions.json`` onto the judging volume pack root."""
-    from grader import CASCADE_DESCRIPTIONS_NAME
-
-    local = pack_dir / CASCADE_DESCRIPTIONS_NAME
-    if not local.is_file():
-        return
-    remote = f"/{CASCADE_DESCRIPTIONS_NAME}"
-    with judging_volume.batch_upload(force=True) as batch:
-        batch.put_file(str(local), remote)
-    print(f"[run-judges] uploaded cascade captions -> {remote}")
-
-
 def _upload_local_ingest(pack_dir: Path) -> None:
     """Upload current local predictions/manifest for ingest after GPU workers finish.
 
@@ -1817,11 +1743,6 @@ def _upload_local_ingest(pack_dir: Path) -> None:
     """
     prefix = f"/{INGEST_DIR_NAME}"
     uploads: list[tuple[str, str]] = []
-    from grader import CASCADE_DESCRIPTIONS_NAME
-
-    cascade = pack_dir / CASCADE_DESCRIPTIONS_NAME
-    if cascade.is_file():
-        uploads.append((str(cascade), f"{prefix}/{CASCADE_DESCRIPTIONS_NAME}"))
     manifest = pack_dir / "manifest.json"
     if manifest.is_file():
         uploads.append((str(manifest), f"{prefix}/manifest.json"))
@@ -2028,7 +1949,6 @@ def _run_judges(
     batch_poll_interval: float = 30.0,
 ) -> dict:
     from grader import (
-        CASCADE_PROMPT_NAME,
         JUDGE_FORMATS,
         compose_judge_key,
         iter_grade_modes,
@@ -2048,7 +1968,6 @@ def _run_judges(
     suite, dedicated, api, first_new = _select_judges(judge_model_id)
     live_api, batch_api = split_api_judges(api)
     modes = iter_grade_modes(prompt=prompt, include_gold=include_gold)
-    needs_cascade = any(name == CASCADE_PROMPT_NAME for name, _ in modes)
     needs_audio = any(JUDGE_FORMATS[name].audio_included for name, _ in modes)
     if not live_api and not suite and not dedicated:
         needs_audio = False
@@ -2077,7 +1996,7 @@ def _run_judges(
     existing_primary = None
     mode = "freeform"
     local_api = bool(live_api or batch_api)
-    if local_api or not needs_modal or needs_cascade:
+    if local_api or not needs_modal:
         pack_dir = _require_local_pack(
             need_audio=needs_audio and bool(live_api)
         )
@@ -2086,12 +2005,6 @@ def _run_judges(
         gradees = _local_model_labels(models)
         question_ids = _require_labeled_question_ids(pack_dir)
         existing_primary = manifest.get("primary_judge")
-    if needs_cascade:
-        assert pack_dir is not None
-        cascade_descs = _ensure_cascade_descriptions(pack_dir)
-        question_ids = _filter_cascade_question_ids(question_ids, cascade_descs)
-        if needs_modal:
-            _upload_cascade_descriptions(pack_dir)
     if make_primary:
         primary = first_new
     else:
