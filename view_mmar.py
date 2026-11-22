@@ -58,7 +58,7 @@ MMAR_AUDIO_ARCHIVE = "mmar-audio.tar.gz"
 MIN_MMAR_WAVS = 1000
 LABEL_ORDER = MODEL_LABEL_ORDER + ALL_API_LABELS
 
-# Official MMAR taxonomy (evaluation.py / run_judges.py).
+# Official MMAR taxonomy (run_judges.py).
 MMAR_CATEGORIES = (
     "Signal Layer",
     "Perception Layer",

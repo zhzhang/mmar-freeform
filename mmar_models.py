@@ -350,63 +350,12 @@ MODEL_SPECS: dict[str, dict[str, Any]] = {
             "repetition_penalty": 1.0,
         },
     },
-    # Text-only VL MoE (122B / 10B active), native block-wise FP8. No audio
-    # encoder; language_model_only skips the vision tower so a single B200
-    # (~180 GiB) can hold the ~122 GiB weights plus KV.
-    # https://huggingface.co/Qwen/Qwen3.5-122B-A10B-FP8
-    # Card thinking/general: T=1.0, top_p=0.95, top_k=20, presence_penalty=1.5.
-    # generation_config.json is T=0.6 (coding); we use the general recipe.
-    # "qwen3.5-122b-a10b-fp8": {
-    #     "model_id": "Qwen/Qwen3.5-122B-A10B-FP8",
-    #     "gpu": "B200",
-    #     "backend": "vllm_chat",
-    #     "text_only": True,
-    #     "engine": {
-    #         "dtype": "auto",
-    #         "max_model_len": 16384,
-    #         # 12 full-attn layers × 2 kv × 256 × 2 × 2B ≈ 24 KiB/tok. B200
-    #         # 180×0.90 − ~122 GiB FP8 weights ⇒ ~40 GiB KV ≈ 1.6M tokens.
-    #         # 64 seqs × 16k sits under that; 16k batched tokens for prefill.
-    #         "max_num_seqs": 64,
-    #         "max_num_batched_tokens": 16384,
-    #         "enforce_eager": False,
-    #         "trust_remote_code": True,
-    #         "enable_prefix_caching": True,
-    #         "gpu_memory_utilization": 0.90,
-    #         "disable_log_stats": False,
-    #         "attention_backend": "flashinfer",
-    #         # FlashInfer fp8_gemm autotune segfaults on B200 (cuBLAS bmm_fp8;
-    #         # vllm#39814). CUTLASS SM100 default is used instead.
-    #         "enable_flashinfer_autotune": False,
-    #         "async_scheduling": True,
-    #         "language_model_only": True,
-    #     },
-    #     "native_thinking": True,
-    #     "enable_thinking": True,
-    #     "reasoning_parser": "qwen3",
-    #     "sampling": {
-    #         "temperature": 1.0,
-    #         "top_p": 0.95,
-    #         "top_k": 20,
-    #         "presence_penalty": 1.5,
-    #         "max_tokens": 8192,
-    #         "repetition_penalty": 1.0,
-    #     },
-    # },
 }
 
 ALL_MODEL_LABELS = tuple(MODEL_SPECS.keys())
 NATIVE_THINKING_LABELS = frozenset(
     label for label, spec in MODEL_SPECS.items() if spec.get("native_thinking")
 )
-THINKING_ENABLED_LABELS = tuple(
-    label for label, spec in MODEL_SPECS.items() if spec.get("enable_thinking")
-)
-
-
-def has_native_thinking(label: str) -> bool:
-    """True when the checkpoint emits native ``<think>`` / reasoning traces."""
-    return label in NATIVE_THINKING_LABELS
 
 
 def thinking_enabled(label: str, args: SimpleNamespace | None = None) -> bool:
@@ -666,7 +615,6 @@ def _vllm_prompt_fn(label: str, args: SimpleNamespace) -> Callable[[dict], str]:
     """String prompt builder used by the plain vLLM ``generate`` path."""
     builders: dict[str, Callable] = {
         "af-next-think": _af_next_prompt,
-        "music-flamingo": _music_flamingo_prompt,
         "qwen3-omni": _qwen3_omni_prompt,
         "qwen3-omni-instruct": _qwen3_omni_prompt,
         "phi-4-multimodal": _phi4_prompt,
@@ -786,22 +734,6 @@ def _af_next_prompt(sample: dict, args: SimpleNamespace | None = None) -> str:
     )
 
 
-def _music_flamingo_prompt(sample: dict, args: SimpleNamespace | None = None) -> str:
-    ns = args or SimpleNamespace(prompt_mode="mc")
-    think_suffix = None
-    if thinking_enabled("music-flamingo", ns):
-        think_suffix = MUSIC_FLAMINGO_THINK_SUFFIX
-    question = _build_prompt(sample, ns, think_suffix=think_suffix)
-    assistant = ASSISTANT_THINK_OPEN if thinking_enabled("music-flamingo", ns) else ""
-    return (
-        f"<|im_start|>system\n{MUSIC_FLAMINGO_SYSTEM}<|im_end|>\n"
-        "<|im_start|>user\n"
-        f"<sound>{question}<|im_end|>\n"
-        "<|im_start|>assistant\n"
-        f"{assistant}"
-    )
-
-
 def _qwen3_omni_prompt(sample: dict, args: SimpleNamespace | None = None) -> str:
     # Qwen3-Omni Thinking primary examples omit a system turn; the chat
     # template only emits one when messages[0].role == "system". Instruct
@@ -842,15 +774,11 @@ def _audio_text_messages(
 
 
 def _chat_messages_for(
-    label: str,
+    _label: str,
     sample: dict,
     args: SimpleNamespace | None = None,
 ) -> list[dict]:
-    """Chat messages for ``vllm_chat``: audio+text, or text only."""
-    spec = MODEL_SPECS.get(label) or {}
-    if spec.get("text_only"):
-        prompt = _build_prompt(sample, args or SimpleNamespace(prompt_mode="mc"))
-        return [{"role": "user", "content": prompt}]
+    """Chat messages for ``vllm_chat``: audio plus the question text."""
     return _audio_text_messages(sample, args)
 
 
@@ -918,31 +846,6 @@ def load_af_next(args: SimpleNamespace):
             args,
             parse_fn=parse_think_tagged_output,
             think_suffix=AF_NEXT_THINK_SUFFIX,
-        )
-
-
-def load_music_flamingo(args: SimpleNamespace):
-    from vllm import LLM
-
-    spec = MODEL_SPECS["music-flamingo"]
-    local_id = resolve_model_dir(args.model_id, getattr(args, "local_model_dir", None))
-    engine = _apply_engine_overrides(spec["engine"], args)
-
-    # Native AudioFlamingo3 / MusicFlamingo path in vLLM 0.28.
-    os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
-    try:
-        llm = LLM(model=local_id, **engine)
-        print(f"Music Flamingo vLLM ready from {local_id} engine={engine}")
-        return {"backend": "vllm", "llm": llm, "parse_fn": parse_music_flamingo_output}
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"Music Flamingo vLLM load failed ({exc}); falling back to HF generate_batch"
-        )
-        return _load_af_hf(
-            local_id,
-            args,
-            parse_fn=parse_music_flamingo_output,
-            think_suffix=MUSIC_FLAMINGO_THINK_SUFFIX,
         )
 
 
@@ -1122,31 +1025,6 @@ def load_nemotron_omni(args: SimpleNamespace):
         "llm": llm,
         "parse_fn": parse_think_tagged_output,
         "chat_kwargs": chat_kwargs_for("nemotron-3-nano-omni"),
-    }
-
-
-def load_qwen35_122b(args: SimpleNamespace):
-    """Qwen3.5-122B-A10B-FP8 text-only (skip vision tower)."""
-    from vllm import LLM
-
-    label = "qwen3.5-122b-a10b-fp8"
-    local_id = resolve_model_dir(args.model_id, getattr(args, "local_model_dir", None))
-    engine = engine_kwargs_for(label, args)
-    llm_kwargs = dict(engine)
-    try:
-        llm = LLM(model=local_id, **llm_kwargs)
-    except TypeError as exc:
-        if not llm_kwargs.get("language_model_only"):
-            raise
-        print(f"[{label}] language_model_only unsupported ({exc}); retrying without it")
-        llm_kwargs.pop("language_model_only", None)
-        llm = LLM(model=local_id, **llm_kwargs)
-    print(f"{label} vLLM chat ready from {local_id} engine={llm_kwargs}")
-    return {
-        "backend": "vllm_chat",
-        "llm": llm,
-        "parse_fn": parse_think_tagged_output,
-        "chat_kwargs": chat_kwargs_for(label),
     }
 
 
@@ -1436,7 +1314,6 @@ def _generate_voxtral_batch(
 
 _LOADERS = {
     "af-next-think": load_af_next,
-    "music-flamingo": load_music_flamingo,
     "qwen3-omni": load_qwen3_omni,
     "qwen3-omni-instruct": load_qwen3_omni_instruct,
     "phi-4-multimodal": load_phi4_multimodal,
@@ -1444,7 +1321,6 @@ _LOADERS = {
     "gemma-4-12b": load_gemma_4_12b,
     "nemotron-3-nano-omni": load_nemotron_omni,
     "voxtral-small-24b": load_voxtral,
-    "qwen3.5-122b-a10b-fp8": load_qwen35_122b,
 }
 
 
@@ -1465,231 +1341,3 @@ def load_model(label: str, args: SimpleNamespace):
 def generate_one(label: str, handle, sample: dict, args: SimpleNamespace) -> dict:
     """Single-sample convenience wrapper around ``generate_batch``."""
     return generate_batch(label, handle, [sample], args, seeds=[int(args.seed)])[0]
-
-
-def _unwrap_tokenizer(tokenizer: Any) -> Any:
-    for attr in ("tokenizer", "_tokenizer"):
-        inner = getattr(tokenizer, attr, None)
-        if inner is not None and inner is not tokenizer:
-            return inner
-    return tokenizer
-
-
-def _int_ids(raw: Any) -> list[int]:
-    if raw is None:
-        return []
-    # tokenizers.Encoding (rust fast tokenizer.encode)
-    ids = getattr(raw, "ids", None)
-    if ids is not None and not isinstance(raw, (bytes, str)):
-        raw = ids
-    # transformers BatchEncoding / BatchFeature
-    elif hasattr(raw, "input_ids"):
-        raw = raw["input_ids"] if hasattr(raw, "__getitem__") else raw.input_ids
-    if hasattr(raw, "tolist"):
-        raw = raw.tolist()
-    if isinstance(raw, int):
-        return [int(raw)]
-    if isinstance(raw, (str, bytes)):
-        raise TypeError(f"cannot coerce {type(raw).__name__} to token ids")
-    # Nested batch: [[ids...]]
-    if raw and isinstance(raw[0], (list, tuple)):
-        raw = raw[0]
-    return [int(x) for x in list(raw)]
-
-
-def _token_pieces(tokenizer: Any, token_ids: list[int]) -> list[dict[str, Any]]:
-    """Per-id vocab piece + decoded text (skip_special_tokens=False)."""
-    tok = _unwrap_tokenizer(tokenizer) if tokenizer is not None else None
-    convert = getattr(tok, "convert_ids_to_tokens", None) if tok is not None else None
-    decode = getattr(tok, "decode", None) if tok is not None else None
-    pieces: list[dict[str, Any]] = []
-    for tid in token_ids:
-        token_name: str | None = None
-        if callable(convert):
-            try:
-                converted = convert(tid)
-                if isinstance(converted, list):
-                    converted = converted[0] if converted else None
-                if converted is not None:
-                    token_name = str(converted)
-            except Exception:
-                token_name = None
-        text = ""
-        if callable(decode):
-            try:
-                text = decode([tid], skip_special_tokens=False)
-            except TypeError:
-                try:
-                    text = decode([tid])
-                except Exception:
-                    text = ""
-            except Exception:
-                text = ""
-        if not isinstance(text, str):
-            text = "" if text is None else str(text)
-        if not text and token_name:
-            text = token_name
-        pieces.append({"id": int(tid), "token": token_name, "text": text})
-    return pieces
-
-
-def _decode_ids(tokenizer: Any, token_ids: list[int]) -> str:
-    tok = _unwrap_tokenizer(tokenizer) if tokenizer is not None else None
-    decode = getattr(tok, "decode", None) if tok is not None else None
-    if not callable(decode) or not token_ids:
-        return "".join(p["text"] for p in _token_pieces(tokenizer, token_ids))
-    try:
-        text = decode(token_ids, skip_special_tokens=False)
-    except TypeError:
-        text = decode(token_ids)
-    return "" if text is None else str(text)
-
-
-def _tokenizer_of(handle: dict) -> Any:
-    if handle.get("tokenizer") is not None:
-        return handle["tokenizer"]
-    llm = handle.get("llm")
-    if llm is not None and hasattr(llm, "get_tokenizer"):
-        try:
-            return llm.get_tokenizer()
-        except Exception:
-            return None
-    return None
-
-
-def _trace_from_ids(
-    tokenizer: Any,
-    token_ids: list[int],
-    *,
-    text_fallback: str | None = None,
-) -> dict[str, Any]:
-    ids = _int_ids(token_ids)
-    pieces = _token_pieces(tokenizer, ids)
-    decoded = _decode_ids(tokenizer, ids) if ids else (text_fallback or "")
-    concat = "".join(piece["text"] for piece in pieces)
-    return {
-        "ids": ids,
-        "pieces": pieces,
-        "text": decoded or concat or (text_fallback or ""),
-        "text_concat": concat,
-        "n_tokens": len(ids),
-    }
-
-
-def _request_output_ids(output: Any) -> tuple[list[int], list[int], str, str | None]:
-    """Return (prompt_ids, output_ids, output_text, finish_reason) from vLLM."""
-    prompt_ids = _int_ids(getattr(output, "prompt_token_ids", None))
-    completions = getattr(output, "outputs", None) or []
-    first = completions[0] if completions else None
-    output_ids = _int_ids(
-        getattr(first, "token_ids", None) if first is not None else None
-    )
-    output_text = ""
-    if first is not None and getattr(first, "text", None) is not None:
-        output_text = str(first.text)
-    elif getattr(output, "text", None) is not None:
-        output_text = str(output.text)
-    finish = getattr(first, "finish_reason", None) if first is not None else None
-    return prompt_ids, output_ids, output_text, str(finish) if finish else None
-
-
-def generate_raw_trace(
-    label: str,
-    handle: dict,
-    sample: dict,
-    args: SimpleNamespace,
-) -> dict[str, Any]:
-    """One-sample generate that keeps prompt/output token ids as consumed.
-
-    ``prompt.text`` / ``output.text`` are ``tokenizer.decode`` of those ids
-    (special tokens kept). ``pieces`` is the per-token split.
-    """
-    backend = handle["backend"]
-    seed = int(getattr(args, "seed", 0) or 0)
-    tokenizer = _tokenizer_of(handle)
-    prompt_ids: list[int] = []
-    output_ids: list[int] = []
-    output_text = ""
-    finish_reason: str | None = None
-    prompt_fallback = ""
-
-    if backend == "vllm":
-        prompt_fn = _vllm_prompt_fn(label, args)
-        prompt_fallback = _maybe_assistant_think_open(label, prompt_fn(sample), args)
-        prompts, sampling = _build_vllm_audio_inputs(
-            label,
-            [sample],
-            prompt_fn=prompt_fn,
-            sampling_rate=16000,
-            args=args,
-            seeds=[seed],
-            n_completions=1,
-        )
-        generate_kwargs: dict[str, Any] = {}
-        if handle.get("lora_request") is not None:
-            generate_kwargs["lora_request"] = handle["lora_request"]
-        outputs = handle["llm"].generate(
-            prompts, sampling_params=sampling, **generate_kwargs
-        )
-        prompt_ids, output_ids, output_text, finish_reason = _request_output_ids(
-            outputs[0]
-        )
-        if getattr(outputs[0], "prompt", None):
-            prompt_fallback = str(outputs[0].prompt)
-
-    elif backend == "vllm_chat":
-        messages = [_chat_messages_for(label, sample, args)]
-        sampling = [_sampling_params_for_request(label, args, seed, n=1)]
-        chat_kwargs = dict(chat_kwargs_for(label, args))
-        outputs = handle["llm"].chat(messages, sampling_params=sampling, **chat_kwargs)
-        prompt_ids, output_ids, output_text, finish_reason = _request_output_ids(
-            outputs[0]
-        )
-        if getattr(outputs[0], "prompt", None):
-            prompt_fallback = str(outputs[0].prompt)
-
-    elif backend == "hf_af_next":
-        parsed = generate_batch(
-            label, handle, [sample], args, seeds=[seed], n_completions=1
-        )[0]
-        output_text = str(parsed.get("model_output") or "")
-        if label == "af-next-think":
-            prompt_fallback = _af_next_prompt(sample, args)
-        else:
-            prompt_fallback = _music_flamingo_prompt(sample, args)
-        prompt_fallback = _maybe_assistant_think_open(label, prompt_fallback, args)
-        finish_reason = "hf_af_next"
-
-    elif backend == "vllm_voxtral":
-        request = _build_voxtral_request(handle["tokenizer"], sample, args)
-        prompt_fallback = _build_prompt(sample, args)
-        prompt_ids = _int_ids(request.get("prompt_token_ids"))
-        sampling = [_sampling_params_for_request(label, args, seed, n=1)]
-        outputs = handle["llm"].generate([request], sampling_params=sampling)
-        _, output_ids, output_text, finish_reason = _request_output_ids(outputs[0])
-        if getattr(outputs[0], "prompt", None):
-            prompt_fallback = str(outputs[0].prompt)
-
-    else:
-        raise ValueError(f"generate_raw_trace has no path for backend {backend!r}")
-
-    prompt_trace = _trace_from_ids(tokenizer, prompt_ids, text_fallback=prompt_fallback)
-    output_trace = _trace_from_ids(tokenizer, output_ids, text_fallback=output_text)
-    parse_fn = _parse_fn_for(
-        args, handle.get("parse_fn", parse_choice_output), label=label
-    )
-    parsed = _output_dict(
-        output_trace["text"] or output_text,
-        sample.get("choices") or [],
-        parse_fn=parse_fn,
-    )
-    return {
-        "backend": backend,
-        "finish_reason": finish_reason,
-        "enable_thinking": thinking_enabled(label, args),
-        "chat_kwargs": dict(chat_kwargs_for(label, args)),
-        "prompt": prompt_trace,
-        "output": output_trace,
-        "thinking_prediction": parsed.get("thinking_prediction"),
-        "answer_prediction": parsed.get("answer_prediction"),
-    }

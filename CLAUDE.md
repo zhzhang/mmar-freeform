@@ -25,7 +25,7 @@ recovers any of the gap.
 
 - **No Modal.** I have no Modal account. Never suggest `modal run`, and never edit
   anything that requires it: `run_experiment.py`, `seed_volume.py`, `rejudge_run.py`,
-  `tune_judge.py`, `grader.py`, `download_results.py`, `modal_cache.py`.
+  `grader.py`, `download_results.py`, `modal_cache.py`.
 - **No GPU.** Judges are the Anthropic API; tools are librosa and faster-whisper on CPU.
 - **Do not modify files outside `tooljudge/`** without asking. Other people are working
   in this repo against the same deadline.

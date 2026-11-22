@@ -1679,28 +1679,6 @@ def run_aggregate() -> dict:
     return result
 
 
-@app.function(
-    image=cpu_image,
-    timeout=30 * 60,
-    volumes={VOLUME_MOUNT: volume, JUDGING_MOUNT: judging_volume},
-)
-def run_accuracy(epsilon: float = DEFAULT_EPSILON) -> dict:
-    judging_volume.reload()
-    pack_dir = _pack_dir()
-    if not pack_dir.is_dir():
-        raise SystemExit(f"Pack not found: {pack_dir}")
-    result = report_judge_accuracy(pack_dir, epsilon=epsilon)
-    judging_volume.commit()
-    return result
-
-
-def _download_pack() -> None:
-    from download_judges import download_judges
-
-    saved = download_judges(local_dir=LOCAL_PACK_DIR)
-    print(f"[run-judges] downloaded pack -> {saved}")
-
-
 def _bootstrap_local_pack(*, need_audio: bool = False) -> Path:
     if need_audio:
         from view_mmar import DEFAULT_AUDIO_DIR, ensure_mmar_audio
