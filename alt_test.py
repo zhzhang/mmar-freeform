@@ -44,19 +44,6 @@ def majority_label(ratings: Sequence[bool]) -> bool | None:
     return n_true > n_false
 
 
-def scoring_gold(
-    ratings: Sequence[bool], *, min_humans: int = MIN_HUMANS_PER_INSTANCE
-) -> bool | None:
-    """Gold used for per-shot diagnostics: majority when ≥ ``min_humans`` ratings."""
-    values = [bool(item) for item in ratings]
-    if len(values) < min_humans:
-        return bool(values[0]) if values else None
-    majority = majority_label(values)
-    if majority is not None:
-        return majority
-    return bool(values[0])
-
-
 def accuracy(pred: Any, annotations: Sequence[Any]) -> float:
     if not annotations:
         return 0.0

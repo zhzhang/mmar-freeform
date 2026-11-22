@@ -612,67 +612,6 @@ def _vllm_prompt_fn(label: str, args: SimpleNamespace) -> Callable[[dict], str]:
     return prompt_fn
 
 
-def _format_chat_messages(messages: list[dict]) -> str:
-    """Readable dump of ``LLM.chat`` / HF ``.chat`` message payloads."""
-    chunks: list[str] = []
-    for message in messages:
-        role = message.get("role") or "user"
-        chunks.append(f"role={role}")
-        chunks.append(_content_to_text(message.get("content")))
-        chunks.append("")
-    return "\n".join(chunks).rstrip() + "\n"
-
-
-def _content_to_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content)
-    parts: list[str] = []
-    for item in content:
-        if not isinstance(item, dict):
-            parts.append(str(item))
-            continue
-        kind = item.get("type")
-        if kind == "text":
-            parts.append(str(item.get("text") or ""))
-        elif kind == "audio_url":
-            url = (item.get("audio_url") or {}).get("url") or ""
-            parts.append(f"<audio_url>{url}</audio_url>")
-        elif kind == "audio":
-            audio = item.get("audio") or item.get("audio_url") or ""
-            parts.append(f"<audio>{audio}</audio>")
-        else:
-            parts.append(str(item))
-    return "\n".join(parts)
-
-
-def render_prompt(
-    label: str,
-    sample: dict,
-    args: SimpleNamespace | None = None,
-) -> str:
-    """Return the text ``generate_batch`` would send for ``label``.
-
-    Audio is represented by the same placeholders used at generate time
-    (``<sound>``, ``<|audio_pad|>``, ``file://`` URLs, etc.). Chat backends
-    (``vllm_chat``) dump the messages ``LLM.chat`` receives; the model's
-    Jinja chat template is applied later by vLLM.
-    """
-    if label not in MODEL_SPECS:
-        raise ValueError(f"Unknown model label {label!r}")
-    ns = args or SimpleNamespace(prompt_mode="mc")
-    backend = str(MODEL_SPECS[label].get("backend") or "")
-
-    if backend == "vllm_chat":
-        return _format_chat_messages(_chat_messages_for(label, sample, ns))
-    if backend == "vllm_voxtral":
-        return _build_prompt(sample, ns)
-
-    prompt_fn = _vllm_prompt_fn(label, ns)
-    return _maybe_assistant_think_open(label, prompt_fn(sample), ns)
-
-
 # ---------------------------------------------------------------------------
 # Prompt builders
 # ---------------------------------------------------------------------------

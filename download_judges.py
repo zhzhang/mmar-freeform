@@ -8,7 +8,6 @@ Usage::
 
     uv run modal run download_judges.py
     uv run modal run download_judges.py --list-only
-    uv run python view_judges.py
 """
 
 from __future__ import annotations
@@ -115,7 +114,7 @@ def main(
         )
         raise SystemExit(exc.returncode) from exc
 
-    print("View with:\n  uv run python view_judges.py")
+    print("Score with:\n  uv run run_judges.py --accuracy-only")
     print(f"(saved under {saved})")
 
 

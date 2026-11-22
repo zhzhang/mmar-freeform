@@ -188,24 +188,6 @@ DEFAULT_AUDIO_DIR = DEFAULT_DATA_DIR / "audio"
 MMAR_REPO = "BoJack/MMAR"
 MMAR_AUDIO_ARCHIVE = "mmar-audio.tar.gz"
 MIN_MMAR_WAVS = 1000
-QUESTION_KEYS = (
-    "id",
-    "question",
-    "answer",
-    "choices",
-    "audio_path",
-    "url",
-    "source",
-    "modality",
-    "category",
-    "sub-category",
-    "language",
-    "thinking",
-    "rubric",
-    "cue",
-)
-# Viewers set ``audio_dir`` here before calling ``resolve_audio``.
-MMAR_CONFIG: dict[str, Any] = {}
 
 
 def ensure_mmar_audio(audio_dir: Path, *, force: bool = False) -> Path:
@@ -266,24 +248,6 @@ def ensure_mmar_audio(audio_dir: Path, *, force: bool = False) -> Path:
         )
     print(f"MMAR audio ready: {wav_count} wav files in {audio_dir}", flush=True)
     return audio_dir
-
-
-def resolve_audio(audio_path: str | None) -> Path | None:
-    """Return a local wav for ``audio_path``, looking up the clip by filename."""
-    if not audio_path:
-        return None
-    path = Path(audio_path)
-    if path.is_file():
-        return path
-    name = path.name
-    candidates = [
-        Path(MMAR_CONFIG["audio_dir"]) / name,
-        DEFAULT_AUDIO_DIR / name,
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
 
 
 # ---------------------------------------------------------------------------

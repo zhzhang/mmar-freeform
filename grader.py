@@ -5,9 +5,6 @@ Judge prompt assembly is table-driven (``JUDGE_FORMATS``). Inspect gold
 ``{question}`` / ``{answer}`` / ``{prediction}``::
 
     python grader.py
-
-Per-judge wraps (the text ``grade_shot_batch`` would send) live in
-``render_judge_prompt``; dump them with ``python render_judge_prompts.py``.
 """
 
 from __future__ import annotations
@@ -234,10 +231,6 @@ def grade_mode_title(name: str) -> str:
     return f"{name} ({audio}, {gold})"
 
 
-def grade_mode_titles() -> dict[str, str]:
-    return {name: grade_mode_title(name) for name in JUDGE_FORMATS}
-
-
 def grade_prompt_name(include_gold: bool = DEFAULT_INCLUDE_GOLD) -> str:
     """Default boolean gold flag → ``JUDGE_FORMATS`` key (``with_gt`` / ``free``)."""
     preferred = "with_gt" if include_gold else "free"
@@ -447,7 +440,7 @@ def accuracy_mode_names(payload: dict | None = None) -> list[str]:
 # Judge prompt formats
 #
 # Named formats live in ``JUDGE_FORMATS`` below. Adding a key there is
-# enough for CLIs, grading, accuracy, and the viewer. Gold is inferred
+# enough for CLIs, grading, and accuracy. Gold is inferred
 # from ``FIELD_GOLD`` in ``field_templates``; audio vs text from
 # ``audio_included``.
 #
@@ -1808,177 +1801,6 @@ def _nongold_audio_chat_messages(
     if closer:
         content.append({"type": "text", "text": closer})
     return [{"role": "user", "content": content}]
-
-
-# ---------------------------------------------------------------------------
-# Prompt rendering (no tokenizer / GPU)
-# ---------------------------------------------------------------------------
-
-_CHAT_JUDGE_BACKENDS = frozenset({"vllm_chat", "hf_chat", "vllm_transformers"})
-_HF_AUDIO_TYPE_BACKENDS = frozenset({"hf_chat", "vllm_transformers"})
-_DEFAULT_RENDER_AUDIO = "/cache/data/mmar/audio/example.wav"
-
-
-def judge_render_labels() -> tuple[str, ...]:
-    """Labels ``render_judge_prompt`` can dump (MODEL_SPECS, dedicated, API)."""
-    from mmar_api import API_SPECS
-    from mmar_models import ALL_MODEL_LABELS
-
-    labels: list[str] = []
-    seen: set[str] = set()
-
-    def _add(items) -> None:
-        for item in items:
-            key = str(item or "").strip()
-            if key and key not in seen:
-                labels.append(key)
-                seen.add(key)
-
-    _add(ALL_MODEL_LABELS)
-    _add(JUDGE_SPECS)
-    _add(NONGOLD_AUDIO_PROMPT_TEMPLATES)
-    _add(API_SPECS)
-    return tuple(labels)
-
-
-def parse_judge_list(value: str) -> list[str]:
-    """Comma-separated judge labels, or ``all``."""
-    raw = [item.strip() for item in value.split(",") if item.strip()]
-    known = judge_render_labels()
-    if not raw or any(item.lower() == "all" for item in raw):
-        return list(known)
-    labels: list[str] = []
-    unknown: list[str] = []
-    for item in raw:
-        resolved = _resolve_render_judge_label(item)
-        if resolved is None:
-            unknown.append(item)
-        elif resolved not in labels:
-            labels.append(resolved)
-    if unknown:
-        raise ValueError(
-            f"Unknown judge label(s): {unknown}. Choose from {list(known)} or 'all'."
-        )
-    return labels
-
-
-def _resolve_render_judge_label(raw: str) -> str | None:
-    from mmar_api import resolve_api_judge_label
-    from mmar_models import MODEL_SPECS
-
-    key = str(raw or "").strip()
-    if not key:
-        return None
-    if key in judge_render_labels():
-        return key
-    api = resolve_api_judge_label(key)
-    if api:
-        return api
-    if key in MODEL_SPECS:
-        return key
-    alias = JUDGE_MODEL_ALIASES.get(key.lower())
-    if alias:
-        slug = judge_label(alias)
-        if slug in JUDGE_SPECS:
-            return slug
-    if key in JUDGE_SPECS:
-        return key
-    return _suite_label_for(key)
-
-
-def _judge_backend(label: str) -> str:
-    from mmar_api import API_SPECS, resolve_api_judge_label
-    from mmar_models import MODEL_SPECS
-
-    if label in MODEL_SPECS:
-        return str(MODEL_SPECS[label].get("backend") or "vllm")
-    api = resolve_api_judge_label(label)
-    if api:
-        return str((API_SPECS.get(api) or {}).get("backend") or "")
-    if label in JUDGE_SPECS:
-        return "vllm"
-    return "vllm"
-
-
-def judge_can_hear_audio(label: str) -> bool:
-    """True when this label can take an ``audio_included`` format."""
-    from mmar_api import is_api_judge
-    from mmar_models import MODEL_SPECS
-
-    if is_api_judge(label):
-        return True
-    if label in NONGOLD_AUDIO_PROMPT_TEMPLATES:
-        return True
-    return label in MODEL_SPECS
-
-
-def render_judge_prompt(
-    label: str,
-    job: dict,
-    *,
-    prompt: str | None = None,
-    include_gold: bool | None = None,
-) -> str:
-    """Return the text ``grade_shot_batch`` would send for ``label``.
-
-    Audio is represented by the same placeholders used at grade time
-    (``<sound>``, ``<|audio_pad|>``, ``file://`` URLs, etc.). Chat backends
-    dump the messages ``LLM.chat`` receives; the model's Jinja chat template
-    is applied later by vLLM / HF. API judges send ``build_grade_prompt``
-    text and attach audio out of band when the format includes it.
-    """
-    from mmar_api import is_api_judge
-    from mmar_models import _format_chat_messages
-
-    resolved = _resolve_render_judge_label(label) or label
-    gold_flag = DEFAULT_INCLUDE_GOLD if include_gold is None else include_gold
-    fmt = get_judge_format(prompt, include_gold=gold_flag)
-    question = str(job.get("question") or "")
-    answer = str(job.get("answer") or "")
-    prediction = str(job.get("prediction") or "")
-    audio_raw = str(job.get("audio_path") or "") or _DEFAULT_RENDER_AUDIO
-    audio_path = Path(audio_raw)
-
-    if not fmt.audio_included:
-        text = fmt.as_text(
-            question=question,
-            answer=answer,
-            prediction=prediction,
-        )
-        return text if text.endswith("\n") else f"{text}\n"
-
-    if not judge_can_hear_audio(resolved):
-        raise ValueError(
-            f"{resolved!r} cannot hear audio; use a suite or live API judge"
-        )
-
-    if is_api_judge(resolved):
-        text = fmt.as_text(question=question, answer=answer, prediction=prediction)
-        body = text if text.endswith("\n") else f"{text}\n"
-        return f"[audio attached]\n{body}"
-
-    backend = _judge_backend(resolved)
-    instructions = _adapt_judge_instructions(resolved, fmt.prompt)
-    if backend in _CHAT_JUDGE_BACKENDS:
-        audio_type = "audio" if backend in _HF_AUDIO_TYPE_BACKENDS else "audio_url"
-        messages = _nongold_audio_chat_messages(
-            instructions,
-            question,
-            prediction,
-            audio_path,
-            audio_type=audio_type,
-            closer=fmt.closer,
-            answer=answer,
-            field_templates=fmt.field_templates,
-        )
-        return _format_chat_messages(messages)
-    if backend == "vllm_voxtral":
-        fields = fmt.fields_with_closer(
-            question=question, answer=answer, prediction=prediction
-        )
-        return f"role=user\n{instructions}\n<audio>{audio_path}</audio>\n{fields}\n"
-    fields = fmt.fields(question=question, answer=answer, prediction=prediction)
-    return _nongold_audio_prompt_string(resolved, instructions, fields, fmt.closer)
 
 
 def _grade_sampling(

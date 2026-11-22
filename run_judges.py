@@ -50,9 +50,8 @@ Mixed (API locally while Modal vLLM runs detached)::
     uv run run_judges.py \\
       --judge-model-id gemini-3.7-flash,qwen3-omni
 
-    # Download remote verdicts and inspect vs exports/ labels
+    # Download remote verdicts
     uv run modal run download_judges.py
-    uv run python view_judges.py
 """
 
 from __future__ import annotations

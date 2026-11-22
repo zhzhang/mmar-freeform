@@ -42,7 +42,7 @@ uv run modal run seed_volume.py --datasets mmar \
 # Full freeform generation (--detach required so GPU workers survive the client exit)
 uv run modal run --detach run_experiment.py
 
-# Smoke test one model (plain vLLM: SamplingParams n=2)
+# One model, two shots (plain vLLM: SamplingParams n=2)
 uv run modal run --detach run_experiment.py \
   --models af-next-think --n-shots 2
 
@@ -93,7 +93,7 @@ writes `models/<label>/predictions.jsonl`. Grade those predictions with
   meta/cuda failure mode.
 - **Compile cache**: `compile_cache.py` attaches the existing
   `/cache/vllm/<label>/` tree, loads the model, and runs a warmup generate
-  only on a cache miss (new or rewritten artifacts). Later eval / smoke /
+  only on a cache miss (new or rewritten artifacts). Later eval /
   judge containers load that tree (`VLLM_CACHE_ROOT`,
   `TORCHINDUCTOR_CACHE_DIR`, `TRITON_CACHE_DIR`). CUDA graphs still
   recapture on each boot. FlashInfer TRT-LLM cubins are version-keyed (one
@@ -119,32 +119,15 @@ writes `models/<label>/predictions.jsonl`. Grade those predictions with
 - The shared eval image keeps `VLLM_ENABLE_V1_MULTIPROCESSING=0`
   (in-process EngineCore).
 
-## Download + view
+## Download
 
 ```bash
 # Default: mmar-freeform-thinking volume root -> outputs/mmar-freeform-thinking/
 uv run modal run download_results.py
-uv run python view_difficulty.py          # single-run UI (:7860)
-uv run python view_mode_compare.py        # MCQ ↔ freeform compare (:7861)
 
-# Judge pack vs human labels in exports/
+# Judging pack (verdicts for the human-labeled shots in exports/)
 uv run modal run download_judges.py
-uv run python view_judges.py              # judge outcomes UI (:7862)
 ```
-
-Open http://127.0.0.1:7860 — questions are ordered hardest-first
-(ascending average `shot_success_rate` across models). Each example detail
-opens with a **verdict grid** (test model × judge × shot, green/red cells).
-If a run is missing `difficulty.jsonl` / `scores.json`, the viewer
-aggregates them on startup.
-
-Open http://127.0.0.1:7861 for the mode-compare viewer: it pairs an MC run
-with a freeform run on the same question ids, sorts by
-Δ = MCQ avg − freeform avg, and shows both modes’ per-model shots when a
-question is selected.
-
-Open http://127.0.0.1:7862 for judge outcomes vs the human labels in
-`exports/`.
 
 ## Judge labeled MMAR generations
 
@@ -199,17 +182,15 @@ uv run run_judges.py \
 # Recompute Alt-Test scores from existing local verdicts
 uv run run_judges.py --accuracy-only
 
-# Download the judging pack and inspect vs human labels
+# Download the judging pack
 uv run modal run download_judges.py
-uv run python view_judges.py
 ```
 
 API path knobs: `--qps` (default 4), `--max-workers` (8), `--timeout`
 (180s), `--retries` (20).
 
-`view_judges.py` (http://127.0.0.1:7862) joins judge verdicts from
-`outputs/mmar-judging` to `exports/labels.csv` and
-`exports/generations.csv`. Judges are scored with the
+`--accuracy-only` joins judge verdicts from `outputs/mmar-judging` to
+`exports/labels.csv` and `exports/generations.csv`. Judges are scored with the
 [Alt-Test](https://arxiv.org/abs/2501.10970) on shots that have at least
 three human ratings. The headline number is Average Advantage Probability
 ρ (probability the judge is as good as or better than a randomly chosen
@@ -217,23 +198,6 @@ annotator), one value per composite key
 `{label}__{JUDGE_FORMATS key}__{gold|nongold}`, one table per recipe.
 Winning rate ω
 uses `--epsilon` (default 0.15) and is secondary.
-Per-shot chips use majority vote of those ratings.
-
-## Retrofit existing runs
-
-Older freeform outputs store a single flat `grader` / `grader_output` per
-shot. Migrate them locally (no GPU) into the multi-judge schema:
-
-```bash
-uv run python retrofit_judges.py
-uv run python retrofit_judges.py --run 20260807T145000Z --dry-run
-uv run python retrofit_judges.py --set-primary qwen3-omni --backup
-```
-
-This rewrites `models/*/predictions.jsonl`, stamps `judges` /
-`primary_judge` on `manifest.json`, and regenerates `difficulty.jsonl` /
-`scores.json`. MC runs get a synthetic `string-match` judge so the viewer
-grid is uniform. Idempotent — safe to re-run.
 
 ## Output layout
 

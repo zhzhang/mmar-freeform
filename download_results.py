@@ -206,5 +206,4 @@ def main(
         )
         raise SystemExit(exc.returncode) from exc
 
-    print("View with:\n  uv run python view_difficulty.py")
-    print(f"(saved under {saved})")
+    print(f"Saved under {saved}")
