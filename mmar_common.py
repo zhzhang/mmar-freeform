@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import random
 import re
+import shutil
+import tarfile
+import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -183,6 +186,110 @@ def count_wavs(audio_dir: Path) -> int:
         for path in audio_dir.iterdir()
         if path.is_file() and path.suffix.lower() == ".wav"
     )
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_DATA_DIR = REPO_ROOT / "data" / "mmar"
+DEFAULT_AUDIO_DIR = DEFAULT_DATA_DIR / "audio"
+MMAR_REPO = "BoJack/MMAR"
+MMAR_AUDIO_ARCHIVE = "mmar-audio.tar.gz"
+MIN_MMAR_WAVS = 1000
+QUESTION_KEYS = (
+    "id",
+    "question",
+    "answer",
+    "choices",
+    "audio_path",
+    "url",
+    "source",
+    "modality",
+    "category",
+    "sub-category",
+    "language",
+    "thinking",
+    "rubric",
+    "cue",
+)
+# Viewers set ``audio_dir`` here before calling ``resolve_audio``.
+MMAR_CONFIG: dict[str, Any] = {}
+
+
+def ensure_mmar_audio(audio_dir: Path, *, force: bool = False) -> Path:
+    """Download and extract the MMAR wav archive into ``audio_dir`` if needed."""
+    audio_dir = audio_dir.expanduser().resolve()
+    wav_count = count_wavs(audio_dir)
+    if wav_count >= MIN_MMAR_WAVS and not force:
+        print(f"MMAR audio ready: {wav_count} wav files in {audio_dir}", flush=True)
+        return audio_dir
+
+    from huggingface_hub import hf_hub_download
+
+    cache_root = audio_dir.parent
+    archive_cache = cache_root / MMAR_AUDIO_ARCHIVE
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    print(
+        f"MMAR audio missing or incomplete ({wav_count} wavs); "
+        f"downloading {MMAR_AUDIO_ARCHIVE} from {MMAR_REPO} ...",
+        flush=True,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="mmar-audio-") as tmp:
+        tmp_root = Path(tmp)
+        archive_tmp = Path(
+            hf_hub_download(
+                repo_id=MMAR_REPO,
+                filename=MMAR_AUDIO_ARCHIVE,
+                repo_type="dataset",
+                local_dir=str(tmp_root / "download"),
+            )
+        )
+        print(f"Extracting {archive_tmp.name} ...", flush=True)
+        extract_dir = tmp_root / "extract"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_tmp, "r:gz") as tar:
+            tar.extractall(path=extract_dir)
+
+        candidate_audio = extract_dir / "audio"
+        if not candidate_audio.is_dir():
+            matches = [path for path in extract_dir.rglob("audio") if path.is_dir()]
+            if not matches:
+                raise SystemExit(
+                    f"No audio/ directory found after extracting {archive_tmp}"
+                )
+            candidate_audio = matches[0]
+
+        if audio_dir.exists():
+            shutil.rmtree(audio_dir)
+        shutil.copytree(candidate_audio, audio_dir)
+        shutil.copy2(archive_tmp, archive_cache)
+
+    wav_count = count_wavs(audio_dir)
+    if wav_count < MIN_MMAR_WAVS:
+        raise SystemExit(
+            f"Expected at least {MIN_MMAR_WAVS} wav files in {audio_dir}, "
+            f"found {wav_count}."
+        )
+    print(f"MMAR audio ready: {wav_count} wav files in {audio_dir}", flush=True)
+    return audio_dir
+
+
+def resolve_audio(audio_path: str | None) -> Path | None:
+    """Return a local wav for ``audio_path``, looking up the clip by filename."""
+    if not audio_path:
+        return None
+    path = Path(audio_path)
+    if path.is_file():
+        return path
+    name = path.name
+    candidates = [
+        Path(MMAR_CONFIG["audio_dir"]) / name,
+        DEFAULT_AUDIO_DIR / name,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------

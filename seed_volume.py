@@ -53,7 +53,7 @@ MODELS_ROOT = VOLUME_MOUNT / "models"
 MMAR_REPO = "BoJack/MMAR"
 MMAR_AUDIO_ARCHIVE = "mmar-audio.tar.gz"
 # HF MMAR-meta.json omits thinking/rubric/cue. Use the GitHub jsonl that
-# includes GT CoT and instance rubrics (shown in view_mmar.py).
+# includes GT CoT and instance rubrics.
 MMAR_META_URL = "https://raw.githubusercontent.com/ddlBoJack/MMAR/main/MMAR-meta.jsonl"
 MMAR_RUBRIC_KEYS = ("thinking", "rubric", "cue")
 MIN_MMAR_WAVS = 1000

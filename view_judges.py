@@ -50,14 +50,13 @@ from alt_test import (
     score_binary_judge,
     scoring_gold,
 )
-from mmar_common import load_jsonl
-from view_mmar import (
-    CONFIG as MMAR_CONFIG,
+from mmar_common import (
     DEFAULT_AUDIO_DIR,
     DEFAULT_DATA_DIR,
+    MMAR_CONFIG,
     QUESTION_KEYS,
-    _compact_judge_entry,
     ensure_mmar_audio,
+    load_jsonl,
     resolve_audio,
 )
 
@@ -188,6 +187,45 @@ def load_generation_rows(path: Path) -> list[dict[str, Any]]:
 
 def _tuple_key(qid: str, model: str, shot_index: int) -> tuple[str, str, int]:
     return (qid, model, shot_index)
+
+
+_JUDGE_ENTRY_KEYS = (
+    "correct",
+    "verdict",
+    "output",
+    "generation",
+    "reasoning",
+    "model_id",
+    "prompt",
+    "include_gold",
+    "n_samples",
+)
+
+
+def _compact_judge_entry(entry: Any) -> dict[str, Any] | None:
+    if not isinstance(entry, dict):
+        return None
+    out = {key: entry.get(key) for key in _JUDGE_ENTRY_KEYS if key in entry}
+    if "correct" not in out and entry.get("correct") is not None:
+        out["correct"] = entry.get("correct")
+    if "verdict" not in out and out.get("correct") is not None:
+        out["verdict"] = "pass" if out.get("correct") else "fail"
+    samples = entry.get("samples")
+    if isinstance(samples, list) and samples:
+        compacted_samples: list[dict[str, Any]] = []
+        for item in samples:
+            if not isinstance(item, dict):
+                continue
+            sample: dict[str, Any] = {}
+            for key in ("correct", "verdict", "output", "generation", "reasoning"):
+                if key in item:
+                    sample[key] = item.get(key)
+            if sample:
+                compacted_samples.append(sample)
+        if compacted_samples:
+            out["samples"] = compacted_samples
+            out.setdefault("n_samples", len(compacted_samples))
+    return out
 
 
 def compact_judge_entry(entry: Any) -> dict[str, Any] | None:

@@ -38,9 +38,12 @@ from mmar_api import (
     parse_api_model_list,
 )
 from mmar_common import (
+    DEFAULT_AUDIO_DIR,
+    DEFAULT_DATA_DIR,
     aggregate_n_shot_record,
     build_mmar_freeform_prompt,
     build_mmar_prompt,
+    ensure_mmar_audio,
     load_completed_ids,
     load_jsonl,
     load_question_ids_csv,
@@ -52,7 +55,6 @@ from mmar_common import (
     write_json,
     write_jsonl,
 )
-from view_mmar import DEFAULT_AUDIO_DIR, DEFAULT_DATA_DIR, ensure_mmar_audio
 
 REPO_ROOT = Path(__file__).resolve().parent
 API_EXPERIMENT = "exp-mmar-question-difficulty-api"

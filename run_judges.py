@@ -104,7 +104,15 @@ from alt_test import (
     llm_annotation_from_entry,
     score_binary_judge,
 )
-from mmar_common import judge_label, load_jsonl, resolve_path, write_json, write_jsonl
+from mmar_common import (
+    DEFAULT_AUDIO_DIR,
+    ensure_mmar_audio,
+    judge_label,
+    load_jsonl,
+    resolve_path,
+    write_json,
+    write_jsonl,
+)
 from mmar_models import ALL_MODEL_LABELS, MODEL_SPECS
 from modal_cache import (
     DEFAULT_MMAR_DATA_ROOT,
@@ -1681,8 +1689,6 @@ def run_aggregate() -> dict:
 
 def _bootstrap_local_pack(*, need_audio: bool = False) -> Path:
     if need_audio:
-        from view_mmar import DEFAULT_AUDIO_DIR, ensure_mmar_audio
-
         ensure_mmar_audio(DEFAULT_AUDIO_DIR)
     materialize_exports_pack(LOCAL_PACK_DIR)
     if not (LOCAL_PACK_DIR / "manifest.json").is_file():

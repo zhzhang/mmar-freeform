@@ -35,13 +35,13 @@ from grader import (
     judge_mode_bucket,
     parse_judge_key,
 )
-from mmar_common import load_jsonl
-from view_mmar import (
-    CONFIG as MMAR_CONFIG,
+from mmar_common import (
     DEFAULT_AUDIO_DIR,
     DEFAULT_DATA_DIR,
+    MMAR_CONFIG,
     QUESTION_KEYS,
     ensure_mmar_audio,
+    load_jsonl,
     resolve_audio,
 )
 
